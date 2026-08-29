@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 
 import pychrono as chrono
 
@@ -21,6 +22,18 @@ GEOM_CYLINDER = 4
 GEOM_MESH = 5
 GEOM_COMPOUND = 6
 GEOM_CONCAVE_INTERNAL_EDGE = 1
+
+# Chrono accepts any consistent unit system, while its NSC solver and collision
+# defaults are tuned for values near unity.  FreeCAD models are commonly only a
+# few millimetres across; solving them internally in millimetres avoids tiny
+# inertias (around 1e-12 kg*m^2) without changing the metre-based adapter API.
+_LENGTH_SCALE = 1000.0
+# Keep the internal units coherent: metres -> millimetres and kilograms ->
+# milligrams.  Scaling only length left sub-millimetre particles with masses
+# around 1e-6 in Chrono's solver and could make dense NSC contacts diverge.
+# Uniform mass scaling preserves accelerations, restitution, and friction.
+_MASS_SCALE = 1.0e6
+_CONTACT_STEP_SECONDS_PER_MM = 2.0e-4
 
 
 class _Client:
@@ -57,6 +70,45 @@ _clients = {}
 _next_client_id = 1
 
 
+def _chrono_version():
+    """Best-effort version lookup for PyChrono builds that expose no constant."""
+    for name in ("CHRONO_VERSION", "__version__"):
+        value = getattr(chrono, name, None)
+        if value:
+            return str(value)
+    for header in (
+            "/usr/include/chrono/ChVersion.h",
+            "/usr/local/include/chrono/ChVersion.h"):
+        try:
+            with open(header, encoding="utf-8") as stream:
+                match = re.search(
+                    r'^#define\s+CHRONO_VERSION\s+"([^"]+)"',
+                    stream.read(), re.MULTILINE)
+            if match:
+                return match.group(1)
+        except OSError:
+            continue
+    return "unknown"
+
+
+def getCapabilities():
+    """Return JSON-safe runtime facts used by the FreeCAD setup detector."""
+    collision_system = getattr(chrono, "ChCollisionSystem", None)
+    return {
+        "chrono_version": _chrono_version(),
+        "multicore_collision_available": bool(
+            collision_system is not None
+            and hasattr(collision_system, "Type_MULTICORE")),
+        "multicore_nsc_system_available": hasattr(
+            chrono, "ChSystemMulticoreNSC"),
+        "thread_count": max(1, os.cpu_count() or 1),
+        # Chrono 10 has dedicated triangle narrow-phase paths for these shapes.
+        # Cylinder/capsule/convex contacts use its generic path, which can
+        # incorrectly bridge openings in a concave mesh.
+        "multicore_concave_dynamic_shapes": ["sphere", "box"],
+    }
+
+
 def _client(client_id):
     try:
         return _clients[client_id]
@@ -66,6 +118,14 @@ def _client(client_id):
 
 def _vec(values):
     return chrono.ChVector3d(float(values[0]), float(values[1]), float(values[2]))
+
+
+def _length_vec(values):
+    return chrono.ChVector3d(
+        float(values[0]) * _LENGTH_SCALE,
+        float(values[1]) * _LENGTH_SCALE,
+        float(values[2]) * _LENGTH_SCALE,
+    )
 
 
 def _quat_xyzw(values):
@@ -91,6 +151,33 @@ def _shape_radius(meta):
             result = max(result, _shape_radius(child)
                          + math.sqrt(sum(value * value for value in position)))
         return result
+    return 0.0
+
+
+def _shape_min_extent(meta):
+    """Return the smallest useful half-size for collision-margin limiting."""
+    kind = meta["kind"]
+    if kind == GEOM_SPHERE:
+        return meta["radius"]
+    if kind == GEOM_BOX:
+        return min(meta["half_extents"])
+    if kind == GEOM_CYLINDER:
+        return min(meta["radius"], meta["height"] * 0.5)
+    if kind == GEOM_MESH:
+        vertices = meta["vertices"]
+        if not vertices:
+            return 0.0
+        spans = [max(point[axis] for point in vertices)
+                 - min(point[axis] for point in vertices)
+                 for axis in range(3)]
+        positive = [span * 0.5 for span in spans if span > 0.0]
+        return min(positive, default=0.0)
+    if kind == GEOM_COMPOUND:
+        return min(
+            (_shape_min_extent(meta["client"].shapes[shape_id])
+             for shape_id in meta["children"]),
+            default=0.0,
+        )
     return 0.0
 
 
@@ -127,8 +214,18 @@ def _build_shape(meta, material, is_static):
     if kind == GEOM_SPHERE:
         return chrono.ChCollisionShapeSphere(material, meta["radius"])
     if kind == GEOM_CYLINDER:
-        return chrono.ChCollisionShapeCylinder(
-            material, meta["radius"], meta["height"])
+        # Chrono 10's analytic cylinder/triangle narrow phase is unstable for
+        # concave containers.  A 24-sided convex prism retains the cylinder's
+        # dimensions (under 1% radial error) and uses the robust convex path.
+        points = chrono.vector_ChVector3d()
+        radius = meta["radius"]
+        half_height = meta["height"] * 0.5
+        for z in (-half_height, half_height):
+            for index in range(24):
+                angle = 2.0 * math.pi * index / 24.0
+                points.push_back(chrono.ChVector3d(
+                    radius * math.cos(angle), radius * math.sin(angle), z))
+        return chrono.ChCollisionShapeConvexHull(material, points)
     if kind == GEOM_MESH:
         vertices = meta["vertices"]
         indices = meta.get("indices")
@@ -140,6 +237,10 @@ def _build_shape(meta, material, is_static):
                     _vec(vertices[indices[offset + 1]]),
                     _vec(vertices[indices[offset + 2]]),
                 )
+            # AddTriangle stores independent vertices.  Weld coincident CAD
+            # vertices so shared mesh edges do not produce duplicate contact
+            # constraints (a major source of NSC divergence in dense fills).
+            mesh.RepairDuplicateVertexes(1.0e-9)
             return chrono.ChCollisionShapeTriangleMesh(
                 material, mesh, bool(is_static), False, 0.0)
         points = chrono.vector_ChVector3d()
@@ -175,7 +276,11 @@ def disconnect(physicsClientId=0):
 
 def setGravity(x, y, z, physicsClientId=0):
     _client(physicsClientId).system.SetGravitationalAcceleration(
-        chrono.ChVector3d(float(x), float(y), float(z)))
+        chrono.ChVector3d(
+            float(x) * _LENGTH_SCALE,
+            float(y) * _LENGTH_SCALE,
+            float(z) * _LENGTH_SCALE,
+        ))
 
 
 def setTimeStep(timeStep, physicsClientId=0):
@@ -200,14 +305,15 @@ def createCollisionShape(shapeType, physicsClientId=0, **parameters):
     client.next_shape_id += 1
     meta = {"kind": shapeType, "client": client}
     if shapeType == GEOM_BOX:
-        meta["half_extents"] = tuple(float(v) for v in parameters["halfExtents"])
+        meta["half_extents"] = tuple(
+            float(v) * _LENGTH_SCALE for v in parameters["halfExtents"])
     elif shapeType == GEOM_SPHERE:
-        meta["radius"] = float(parameters["radius"])
+        meta["radius"] = float(parameters["radius"]) * _LENGTH_SCALE
     elif shapeType == GEOM_CYLINDER:
-        meta["radius"] = float(parameters["radius"])
-        meta["height"] = float(parameters["height"])
+        meta["radius"] = float(parameters["radius"]) * _LENGTH_SCALE
+        meta["height"] = float(parameters["height"]) * _LENGTH_SCALE
     elif shapeType == GEOM_MESH:
-        meta["vertices"] = [tuple(float(v) for v in point)
+        meta["vertices"] = [tuple(float(v) * _LENGTH_SCALE for v in point)
                             for point in parameters["vertices"]]
         indices = parameters.get("indices")
         meta["indices"] = tuple(int(i) for i in indices) if indices else ()
@@ -215,7 +321,7 @@ def createCollisionShape(shapeType, physicsClientId=0, **parameters):
     elif shapeType == GEOM_COMPOUND:
         meta["children"] = tuple(parameters.get("children", ()))
         meta["positions"] = tuple(
-            tuple(float(v) for v in position)
+            tuple(float(v) * _LENGTH_SCALE for v in position)
             for position in parameters.get("childPositions", ()))
         meta["orientations"] = tuple(
             tuple(float(v) for v in orientation)
@@ -231,10 +337,11 @@ def createMultiBody(baseMass, baseCollisionShapeIndex, basePosition,
     client = _client(physicsClientId)
     body_id = client.next_body_id
     client.next_body_id += 1
-    mass = max(0.0, float(baseMass))
+    external_mass = max(0.0, float(baseMass))
+    mass = external_mass * _MASS_SCALE
     body = chrono.ChBody()
     body.SetName(f"freecad-chrono:{body_id}")
-    body.SetPos(_vec(basePosition))
+    body.SetPos(_length_vec(basePosition))
     body.SetRot(_quat_xyzw(baseOrientation))
     material = chrono.ChContactMaterialNSC()
     _add_shape_to_body(
@@ -255,7 +362,7 @@ def createMultiBody(baseMass, baseCollisionShapeIndex, basePosition,
     if collision_system is not None and collision_system.IsInitialized():
         collision_system.BindItem(body)
     client.bodies[body_id] = _BodyState(
-        body, material, baseCollisionShapeIndex, mass)
+        body, material, baseCollisionShapeIndex, external_mass)
     return body_id
 
 
@@ -268,7 +375,21 @@ def changeDynamics(bodyUniqueId, _linkIndex, physicsClientId=0, **parameters):
     if "lateralFriction" in parameters:
         state.material.SetFriction(float(parameters["lateralFriction"]))
     if "collisionMargin" in parameters:
-        margin = max(0.0, float(parameters["collisionMargin"]))
+        requested = max(
+            0.0, float(parameters["collisionMargin"]) * _LENGTH_SCALE)
+        # Chrono recommends an NSC envelope of 5-10% of the smallest shape.
+        # A global 1 mm margin, for example, is twice the radius of the rods in
+        # packed_bed_void_chrono.FCStd and makes contact constraints singular.
+        extent = _shape_min_extent(client.shapes[state.shape_id])
+        if extent > 0.0:
+            # Preserve a user-visible zero margin while retaining the tiny
+            # non-zero safe margin required by Chrono's collision algorithms.
+            # Cap it so a large concave container is not shrunk appreciably.
+            numerical_margin = min(extent * 0.05, 0.025)
+            margin = numerical_margin if requested == 0.0 else min(
+                requested, numerical_margin)
+        else:
+            margin = requested
         body.GetCollisionModel().SetEnvelope(margin)
         body.GetCollisionModel().SetSafeMargin(margin)
     if "linearDamping" in parameters:
@@ -276,9 +397,10 @@ def changeDynamics(bodyUniqueId, _linkIndex, physicsClientId=0, **parameters):
     if "angularDamping" in parameters:
         state.angular_damping = max(0.0, float(parameters["angularDamping"]))
     if "mass" in parameters:
-        mass = max(0.0, float(parameters["mass"]))
-        if mass > 0.0:
-            state.dynamic_mass = mass
+        external_mass = max(0.0, float(parameters["mass"]))
+        mass = external_mass * _MASS_SCALE
+        if external_mass > 0.0:
+            state.dynamic_mass = external_mass
             body.SetMass(mass)
             body.SetInertiaXX(_vec(_inertia(client.shapes[state.shape_id], mass)))
             body.SetFixed(False)
@@ -290,7 +412,7 @@ def resetBaseVelocity(bodyUniqueId, linearVelocity=None, angularVelocity=None,
                       physicsClientId=0):
     body = _client(physicsClientId).bodies[bodyUniqueId].body
     if linearVelocity is not None:
-        body.SetLinVel(_vec(linearVelocity))
+        body.SetLinVel(_length_vec(linearVelocity))
     if angularVelocity is not None:
         body.SetAngVelParent(_vec(angularVelocity))
 
@@ -299,7 +421,9 @@ def getBaseVelocity(bodyUniqueId, physicsClientId=0):
     body = _client(physicsClientId).bodies[bodyUniqueId].body
     linear = body.GetLinVel()
     angular = body.GetAngVelParent()
-    return ((linear.x, linear.y, linear.z),
+    return ((linear.x / _LENGTH_SCALE,
+             linear.y / _LENGTH_SCALE,
+             linear.z / _LENGTH_SCALE),
             (angular.x, angular.y, angular.z))
 
 
@@ -307,7 +431,9 @@ def getBasePositionAndOrientation(bodyUniqueId, physicsClientId=0):
     body = _client(physicsClientId).bodies[bodyUniqueId].body
     position = body.GetPos()
     rotation = body.GetRot()
-    return ((position.x, position.y, position.z),
+    return ((position.x / _LENGTH_SCALE,
+             position.y / _LENGTH_SCALE,
+             position.z / _LENGTH_SCALE),
             (rotation.e1, rotation.e2, rotation.e3, rotation.e0))
 
 
@@ -370,7 +496,8 @@ def getClosestPoints(bodyA, bodyB, distance=0.0, physicsClientId=0):
         + (pos_a.z - pos_b.z) ** 2)
     radius_a = _shape_radius(client.shapes[state_a.shape_id])
     radius_b = _shape_radius(client.shapes[state_b.shape_id])
-    if separation <= radius_a + radius_b + max(0.0, float(distance)):
+    scaled_distance = max(0.0, float(distance)) * _LENGTH_SCALE
+    if separation <= radius_a + radius_b + scaled_distance:
         return [(0, bodyA, bodyB, -1, -1)]
     return []
 
@@ -406,19 +533,47 @@ def removeBody(bodyUniqueId, physicsClientId=0):
 def stepSimulation(physicsClientId=0):
     client = _client(physicsClientId)
     dt = client.time_step
+    # PyChrono 10 does not expose per-body CCD.  Refine only concave-mesh
+    # scenes, with a scale-aware limit: a 0.5 mm particle gets a 0.1 ms
+    # collision step, while ordinary metre-scale scenes avoid needless work.
+    has_concave_mesh = any(
+        shape["kind"] == GEOM_MESH and shape.get("indices")
+        for shape in client.shapes.values())
+    dynamic_extents = [
+        _shape_min_extent(client.shapes[state.shape_id])
+        for state in client.bodies.values()
+        if not state.body.IsFixed()
+    ]
+    if has_concave_mesh and dynamic_extents:
+        smallest_extent = min(
+            (extent for extent in dynamic_extents if extent > 0.0),
+            default=0.0)
+        max_contact_step = (max(
+            1.0e-5,
+            smallest_extent * _CONTACT_STEP_SECONDS_PER_MM,
+        ) if smallest_extent > 0.0 else dt)
+    else:
+        max_contact_step = dt
+    internal_steps = max(1, int(math.ceil(dt / max_contact_step)))
+    internal_dt = dt / internal_steps
     # ChBody in Chrono 10 does not expose direct damping coefficients through
     # PyChrono, so apply the configured global damping deterministically.
-    for state in client.bodies.values():
-        if state.body.IsFixed():
-            continue
-        if state.linear_damping:
-            velocity = state.body.GetLinVel()
-            factor = max(0.0, 1.0 - state.linear_damping * dt)
-            state.body.SetLinVel(chrono.ChVector3d(
-                velocity.x * factor, velocity.y * factor, velocity.z * factor))
-        if state.angular_damping:
-            velocity = state.body.GetAngVelParent()
-            factor = max(0.0, 1.0 - state.angular_damping * dt)
-            state.body.SetAngVelParent(chrono.ChVector3d(
-                velocity.x * factor, velocity.y * factor, velocity.z * factor))
-    client.system.DoStepDynamics(dt)
+    for _internal_step in range(internal_steps):
+        for state in client.bodies.values():
+            if state.body.IsFixed():
+                continue
+            if state.linear_damping:
+                velocity = state.body.GetLinVel()
+                factor = max(0.0, 1.0 - state.linear_damping * internal_dt)
+                state.body.SetLinVel(chrono.ChVector3d(
+                    velocity.x * factor,
+                    velocity.y * factor,
+                    velocity.z * factor))
+            if state.angular_damping:
+                velocity = state.body.GetAngVelParent()
+                factor = max(0.0, 1.0 - state.angular_damping * internal_dt)
+                state.body.SetAngVelParent(chrono.ChVector3d(
+                    velocity.x * factor,
+                    velocity.y * factor,
+                    velocity.z * factor))
+        client.system.DoStepDynamics(internal_dt)

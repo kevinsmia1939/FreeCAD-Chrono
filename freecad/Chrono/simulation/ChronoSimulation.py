@@ -399,6 +399,111 @@ def _detect_freecad_shape_type(fc_shape):
     return "mesh"
 
 
+def _configured_shape_type(shape, override="Auto", is_static=False):
+    """Return the Chrono collision kind produced for a configured CAD shape."""
+    detected = _detect_freecad_shape_type(shape) if override == "Auto" else override
+    if detected == "mesh" and not is_static:
+        return "convex_hull"
+    return detected
+
+
+def multithreading_support(cpu_parallel=True, capabilities=None):
+    """Describe the exact threading/collision mode supported by this document.
+
+    The returned dictionary is intentionally UI-neutral so the task panel and
+    simulation runner always make the same backend decision.
+    """
+    if capabilities is None:
+        try:
+            from . import ChronoAdapter as physics
+            capabilities = physics.getCapabilities()
+        except Exception as exc:
+            capabilities = {
+                "chrono_version": "unknown",
+                "multicore_collision_available": False,
+                "multicore_nsc_system_available": False,
+                "thread_count": 1,
+                "multicore_concave_dynamic_shapes": [],
+                "probe_error": str(exc),
+            }
+
+    version = capabilities.get("chrono_version", "unknown")
+    threads = max(1, int(capabilities.get("thread_count", 1)))
+    base = {
+        "chrono_version": version,
+        "thread_count": threads,
+        "multicore_nsc_system_available": bool(
+            capabilities.get("multicore_nsc_system_available", False)),
+    }
+    if not cpu_parallel:
+        return dict(base, level="off", collision_backend="BULLET",
+                    summary="Disabled by Physics World setting",
+                    detail="Enable CPU parallelization to use available threads.")
+
+    if not capabilities.get("multicore_collision_available", False):
+        detail = (f"PyChrono {version} does not expose the MULTICORE collision "
+                  "backend in this build. Bullet collision will be used; "
+                  "Chrono/Eigen worker threads can still be assigned.")
+        if capabilities.get("probe_error"):
+            detail += f" Capability probe failed: {capabilities['probe_error']}"
+        return dict(base, level="partial", collision_backend="BULLET",
+                    summary="Threaded core only; multicore collision unavailable",
+                    detail=detail)
+
+    rigid_bodies = collect_rigid_bodies()
+    emitters = collect_emitters(enabled_only=True)
+    static_meshes = []
+    dynamic_types = {}
+    for rb in rigid_bodies:
+        original = getattr(rb, "OriginalObject", None)
+        if original is None or not hasattr(original, "Shape"):
+            continue
+        override = getattr(rb, "ShapeOverride", "Auto")
+        kind = _configured_shape_type(
+            original.Shape, override, rb.BodyType == "Passive")
+        if rb.BodyType == "Passive" and kind == "mesh":
+            static_meshes.append(rb.Label)
+        elif rb.BodyType == "Active":
+            dynamic_types.setdefault(kind, []).append(rb.Label)
+    for emitter in emitters:
+        if emitter.BodyType != "Active":
+            continue
+        for template, _ratio in emitter_template_entries(emitter):
+            kind = _configured_shape_type(template.Shape)
+            dynamic_types.setdefault(kind, []).append(
+                f"{emitter.Label} → {template.Label}")
+
+    supported = set(capabilities.get(
+        "multicore_concave_dynamic_shapes", ("sphere", "box")))
+    unsupported = sorted(kind for kind in dynamic_types if kind not in supported)
+    if static_meshes and unsupported:
+        geometry = ", ".join(
+            f"{kind}: {', '.join(dynamic_types[kind])}" for kind in unsupported)
+        detail = (
+            f"Chrono {version} multicore collision has no reliable dedicated "
+            f"triangle contact path for {', '.join(unsupported)} geometry. "
+            f"Passive concave mesh: {', '.join(static_meshes)}. "
+            f"Affected active geometry: {geometry}. Bullet collision is selected "
+            "to preserve openings and cavities; Chrono/Eigen worker threads remain enabled."
+        )
+        return dict(base, level="partial", collision_backend="BULLET",
+                    summary="Threaded core; Bullet collision fallback required",
+                    detail=detail)
+
+    nsc_note = (" The installed PyChrono binding does not expose "
+                "ChSystemMulticoreNSC, so the NSC dynamics system itself remains "
+                "the standard ChSystemNSC."
+                if not base["multicore_nsc_system_available"] else "")
+    return dict(
+        base,
+        level="supported",
+        collision_backend="MULTICORE",
+        summary=f"Multicore collision and threaded core ({threads} threads)",
+        detail=(f"Chrono {version} supports this setup with MULTICORE collision "
+                f"and {threads} Chrono/Eigen worker threads.{nsc_note}"),
+    )
+
+
 def _local_half_extents(fc_shape, orig_pl):
     """
     Return [hx, hy, hz] in mm — collision half-extents in the body's local frame.
@@ -600,7 +705,7 @@ def _make_collision_shape(p, fc_shape, half_extents, orig_pl, world_center,
             height=height,
             physicsClientId=client,
         )
-        return col, radius
+        return col, math.hypot(radius, height * 0.5)
 
     if shape_type == "box":
         col = p.createCollisionShape(
@@ -849,8 +954,15 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
     if cpu_parallel is None:
         cpu_parallel = getattr(world, "EnableCPUParallel", True)
 
+    threading = multithreading_support(
+        cpu_parallel=bool(cpu_parallel), capabilities=p.getCapabilities())
+    collision_parallel = threading["collision_backend"] == "MULTICORE"
+    if cpu_parallel and threading["level"] == "partial":
+        FreeCAD.Console.PrintWarning(
+            f"Chrono: {threading['summary']}. {threading['detail']}\n")
+
     try:
-        client = p.connect(p.DIRECT, cpuParallel=cpu_parallel)
+        client = p.connect(p.DIRECT, cpuParallel=collision_parallel)
     except Exception as exc:
         FreeCAD.Console.PrintError(f"Chrono: unable to start PyChrono: {exc}\n")
         _show_install_error(str(exc))
@@ -860,16 +972,20 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
     p.setPhysicsEngineParameter(
         numSolverIterations=solver_iters, physicsClientId=client)
     if cpu_parallel:
-        # The adapter selects Chrono's MULTICORE collision system and applies
-        # this thread count to Chrono, Eigen, and collision-system workers.
+        # Apply this thread count to Chrono, Eigen, and (when selected) the
+        # multicore collision system.
         try:
-            import os
-            cpu_threads = max(1, os.cpu_count() or 1)
+            cpu_threads = threading["thread_count"]
             p.setPhysicsEngineParameter(
                 numSolverThreads=cpu_threads, physicsClientId=client)
-            FreeCAD.Console.PrintMessage(
-                f"Chrono: multicore collision and threaded core enabled "
-                f"({cpu_threads} threads).\n")
+            if collision_parallel:
+                FreeCAD.Console.PrintMessage(
+                    f"Chrono: multicore collision and threaded core enabled "
+                    f"({cpu_threads} threads).\n")
+            else:
+                FreeCAD.Console.PrintMessage(
+                    f"Chrono: Bullet collision with threaded core enabled "
+                    f"({cpu_threads} threads).\n")
         except (TypeError, ValueError):
             FreeCAD.Console.PrintWarning(
                 "Chrono: this PyChrono build does not support threaded core "
@@ -885,6 +1001,10 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
 
     # {chrono_id: (body_config_obj, link_obj, local_offset_mm, is_emitted)}
     body_map = {}
+    # Conservative bounding radii (metres) used to prevent an emitter from
+    # creating two initially overlapping Chrono bodies.
+    body_characteristic_radii = {}
+    warned_waiting_emitters = set()
     # Emitted active bodies scheduled to become static at a simulation time.
     passivate_at = {}
     passivated_body_ids = set()
@@ -1096,7 +1216,12 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         if getattr(emitter, "UseParticlesPerSecond", False):
             rate = max(0.001, getattr(emitter, "ParticlesPerSecond", 1.0))
             duration = max(0.0, (end_step - start_step) * time_step)
-            count = max(1, int(math.ceil(rate * duration)))
+            expected = rate * duration
+            # FreeCAD quantities can turn an exact 50 * 1 s into
+            # 50.0000000000001.  Do not emit a spurious 51st particle while
+            # retaining ceil semantics for genuinely partial rate intervals.
+            tolerance = 1.0e-9 * max(1.0, expected)
+            count = max(1, int(math.ceil(expected - tolerance)))
         else:
             count = max(1, int(getattr(emitter, "Count", 1)))
         emitter_schedules[emitter.Name] = {
@@ -1108,6 +1233,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             "rate": rate if getattr(emitter, "UseParticlesPerSecond", False) else None,
             "next_template": _emitter_template_selector(
                 emitter_template_entries(emitter)),
+            "pending_template": None,
         }
 
     def scheduled_emission_step(schedule, index):
@@ -1131,9 +1257,14 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                 scheduled_step = scheduled_emission_step(schedule, index)
                 if scheduled_step > schedule["end_step"] or scheduled_step > step:
                     break
-                spawn_emission(
-                    emitter, index, schedule["next_template"](),
-                    step * time_step)
+                template = schedule["pending_template"]
+                if template is None:
+                    template = schedule["next_template"]()
+                    schedule["pending_template"] = template
+                if not spawn_emission(
+                        emitter, index, template, step * time_step):
+                    break
+                schedule["pending_template"] = None
                 schedule["next_index"] += 1
 
     for emitter in emitters:
@@ -1146,6 +1277,39 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         rng, direction_rng = emitter_rngs[emitter.Name]
         (col, characteristic_radius, mass, local_offset,
          restitution, friction) = emitter_configs[emitter.Name][template.Name]
+
+        center = None
+        for _attempt in range(16):
+            candidate = _sample_emission_point(emitter.EmissionSource.Shape, rng)
+            candidate_m = (candidate.x * MM_TO_M,
+                           candidate.y * MM_TO_M,
+                           candidate.z * MM_TO_M)
+            clear = True
+            for existing_id, existing_radius in body_characteristic_radii.items():
+                if existing_id not in body_map:
+                    continue
+                position, _orientation = p.getBasePositionAndOrientation(
+                    existing_id, physicsClientId=client)
+                separation_sq = sum(
+                    (candidate_m[axis] - position[axis]) ** 2
+                    for axis in range(3))
+                minimum = characteristic_radius + existing_radius
+                if separation_sq < minimum * minimum:
+                    clear = False
+                    break
+            if clear:
+                center = candidate
+                break
+        if center is None:
+            if emitter.Name not in warned_waiting_emitters:
+                FreeCAD.Console.PrintWarning(
+                    f"Chrono: delaying emissions from '{emitter.Label}' because "
+                    "its source is occupied. This prevents overlapping bodies "
+                    "and unstable contact constraints.\n")
+                warned_waiting_emitters.add(emitter.Name)
+            return False
+
+        rotation = _emitter_rotation(emitter, rng)
         link = FreeCAD.ActiveDocument.addObject(
             "App::Link", f"_ChEmit_{emitter.Name}_{index + 1}")
         link.setLink(template)
@@ -1156,8 +1320,6 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             link.ViewObject.Visibility = False
         generated_emitter_links[emitter.Name].append(link)
         emitter.GeneratedLinks = generated_emitter_links[emitter.Name]
-        center = _sample_emission_point(emitter.EmissionSource.Shape, rng)
-        rotation = _emitter_rotation(emitter, rng)
         body_id = p.createMultiBody(
             baseMass=mass,
             baseCollisionShapeIndex=col,
@@ -1197,12 +1359,14 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         if FreeCAD.GuiUp:
             link.ViewObject.Visibility = True
         body_map[body_id] = (emitter, link, local_offset, True)
+        body_characteristic_radii[body_id] = characteristic_radius
         become_passive_after = max(
             0.0, getattr(emitter, "BecomePassiveAfter", 0.0))
         if mass > 0.0 and become_passive_after > 0.0:
             passivate_at[body_id] = emission_time + become_passive_after
         _report_event(
             f"particle '{link.Label}' emitted by '{emitter.Label}'.")
+        return True
 
     def body_is_active(body_id, entry):
         """Return whether a body currently participates as an active body."""
@@ -1367,6 +1531,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
 
         for body_id, trigger in destroyed.items():
             body_config, link, _local_offset, is_emitted = body_map.pop(body_id)
+            body_characteristic_radii.pop(body_id, None)
             body_label = body_config.Label
             launch_map.pop(body_id, None)
             passivate_at.pop(body_id, None)
@@ -1556,6 +1721,8 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                 world_center - orig_pl.Base)
 
             body_map[body_id] = (rb, link, local_offset, False)
+            if mass > 0.0:
+                body_characteristic_radii[body_id] = characteristic_radius
 
         emit_scheduled_particles(0)
 
@@ -1587,8 +1754,6 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             return any(
                 schedule["emitter"].Name not in stopped_emitters
                 and schedule["next_index"] < schedule["count"]
-                and scheduled_emission_step(schedule, schedule["next_index"])
-                > current_step
                 for schedule in emitter_schedules.values())
 
         def active_bodies_settled(current_step):

@@ -44,6 +44,13 @@ try:
     container = document.getObject("Chrono")
     assert container is not None
     assert type(container.ViewObject.Proxy).__module__.startswith("freecad.Chrono")
+    from freecad.Chrono.commands.CmdRunSimulation import SimulationPanel
+    panel = SimulationPanel()
+    threading_text = panel.threading_status_label.text()
+    assert "CPU threading:" in threading_text, threading_text
+    assert "Bullet collision fallback" in threading_text, threading_text
+    assert "convex_hull" in threading_text, threading_text
+    panel.reject()
 finally:
     FreeCAD.closeDocument(document.Name)
 print("Chrono GUI workbench and all parity commands: PASS")

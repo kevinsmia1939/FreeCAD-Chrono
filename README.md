@@ -39,7 +39,7 @@ Video tutorial in screenshot/tutorial.mp4
 
 - **Destroy Rigid Body** — When touched, will be deleted/disabled. This can reduce unnecessary compute resources where rigid-body fell off the platform.
 - **Observers and conditional events** — non-physical regions report body entry/exit, body type, speed, AND/OR conditions, delays, emitter start/stop events, and simulation stop conditions.
-- **Multicore execution** — the CPU-parallel option selects Chrono's multicore collision system and assigns all available threads to Chrono and Eigen.
+- **Setup-aware multicore execution** — the simulation panel inspects the configured geometry and installed Chrono version, then reports whether it can use multicore collision or must use a safe Bullet-collision fallback. Available Chrono/Eigen worker threads remain enabled in either mode.
 - **Analytics and settling controls** — stop when all active bodies settle, inspect speed data, and export the same cached animation/analytics data used by the original workflow.
 ---
 
@@ -110,13 +110,28 @@ Restart FreeCAD and select **Chrono Physics** from the workbench dropdown. For t
 
 The `example` directory contains migrated Chrono versions of both original `.FCStd` examples.
 
+## CPU multithreading compatibility
+
+The **Enable CPU parallelization** option is setup-aware. The simulation panel shows the selected mode and the exact reason for any fallback before the simulation starts.
+
+| Simulation setup | Collision mode | Threading used |
+|---|---|---|
+| Primitive collision shapes only (box, sphere, cylinder) | Chrono `MULTICORE` | Multicore collision plus Chrono/Eigen worker threads |
+| Passive concave mesh contacted only by spheres or boxes | Chrono `MULTICORE` | Chrono 10 has dedicated triangle–sphere and triangle–box contact paths; Chrono/Eigen threads are also enabled |
+| Passive concave mesh contacted by cylinders, capsules, convex hulls, or other custom active geometry | Chrono `BULLET` fallback | Chrono/Eigen worker threads remain enabled, but collision detection is not multicore |
+| PyChrono build without the `MULTICORE` collision type | Chrono `BULLET` fallback | Only the Chrono/Eigen threading exposed by that build |
+| CPU parallelization disabled | Chrono `BULLET` | No threading requested by the workbench |
+
+The cylinder/concave-mesh fallback is required by Chrono 10: its multicore narrow phase sends triangle–cylinder and similar pairs through a generic convex contact path which can falsely bridge real openings and cavities. The panel names the affected passive mesh and active geometry. The current openSUSE PyChrono 10.0.0 bindings also do not expose `ChSystemMulticoreNSC`; therefore “multicore” means multicore collision plus threaded Chrono/Eigen work, not a replacement of the complete NSC dynamics system.
+
 ## Current differences from the Bullet backend
 
 These are limitations of the current PyChrono integration, rather than general limitations of Chrono's C++ engine:
 
 - PyChrono 10 does not expose the V-HACD helper bundled with PyBullet. A dynamic body explicitly set to a concave mesh therefore falls back to a single convex hull. Static concave triangle meshes remain exact.
-- The installed bindings do not expose `ChSystemMulticoreNSC`. CPU parallelization still uses Chrono's `MULTICORE` collision system and threaded Chrono/Eigen core, but the NSC dynamics system itself is not replaced by the separate multicore-system class.
-- PyBullet's per-body CCD controls do not have a direct equivalent in the bound Chrono API used here. Sub-steps remain the primary protection against very fast bodies tunnelling through thin geometry.
+- Chrono 10's analytic cylinder/triangle contact is unstable for concave containers. Cylinder collision is represented by a 24-sided convex prism (under 1% radial error); the visible FreeCAD geometry, mass, and cylinder inertia remain unchanged.
+- The installed bindings do not expose `ChSystemMulticoreNSC`. Where the setup detector permits it, CPU parallelization uses Chrono's `MULTICORE` collision system and threaded Chrono/Eigen core, but the NSC dynamics system itself is not replaced by the separate multicore-system class.
+- PyBullet's per-body CCD controls do not have a direct equivalent in the bound Chrono API used here. Concave-mesh scenes therefore receive automatic, scale-aware internal collision substeps; the Physics World timestep and playback rate do not change.
 - Query-only observer boundary checks use exact FreeCAD point-in-solid containment plus a conservative bounding-radius proximity test. PyBullet can provide an exact `getClosestPoints` query for two disabled-response collision objects.
 - Chrono requires an inertia tensor. Analytic boxes, spheres, and cylinders use their exact diagonal inertia; arbitrary meshes and compounds use a stable spherical estimate, which can produce somewhat different rotation from Bullet's inferred mesh inertia.
 - With the supplied AppImage, pipe-based bridging adds some overhead compared with an in-process PyChrono module. It does not change simulation results and disappears when both programs use the same Python ABI.

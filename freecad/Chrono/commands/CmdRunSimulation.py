@@ -79,9 +79,16 @@ class SimulationPanel:
 
         self.cpu_parallel_chk = QtWidgets.QCheckBox("Enable CPU parallelization")
         self.cpu_parallel_chk.setToolTip(
-            "Use Chrono's multicore collision system and all available "
-            "Chrono/Eigen worker threads. Enabled by default.")
+            "Use all compatible Chrono/Eigen worker threads and, when this "
+            "setup supports it, Chrono's multicore collision system. The "
+            "setup-specific mode is shown below. Enabled by default.")
         sim_layout.addWidget(self.cpu_parallel_chk)
+
+        self.threading_status_label = QtWidgets.QLabel()
+        self.threading_status_label.setWordWrap(True)
+        self.threading_status_label.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse)
+        sim_layout.addWidget(self.threading_status_label)
 
         stop_group = QtWidgets.QGroupBox("Conditional Stop")
         stop_layout = QtWidgets.QVBoxLayout(stop_group)
@@ -264,6 +271,8 @@ class SimulationPanel:
         self.loop_chk.toggled.connect(self._save_panel_settings)
         self.speed_graph_axis.currentIndexChanged.connect(self._save_panel_settings)
         self.cpu_parallel_chk.toggled.connect(self._save_panel_settings)
+        self.cpu_parallel_chk.toggled.connect(
+            self._update_multithreading_status)
         self._load_stop_condition()
         self._update_stop_target_state()
 
@@ -273,6 +282,7 @@ class SimulationPanel:
         cleanup_stale_wireframes()
         cleanup_stale_mesh_displays()
         self._load_panel_settings()
+        self._update_multithreading_status()
         self._try_load_cache()
         if self._show_collision_mesh():
             self._rebuild_mesh_displays()
@@ -406,6 +416,30 @@ class SimulationPanel:
                 "Create a container first.</i>"
             )
 
+    def _update_multithreading_status(self, *_args):
+        """Show the backend and setup-specific threading limitation in-panel."""
+        from ..simulation.ChronoSimulation import multithreading_support
+
+        support = multithreading_support(
+            cpu_parallel=self.cpu_parallel_chk.isChecked())
+        colors = {
+            "supported": ("#173d25", "#b7f5ca", "#3a9d5d"),
+            "partial": ("#493613", "#ffe6a3", "#b88622"),
+            "off": ("#30343b", "#d9dde5", "#747b87"),
+        }
+        background, foreground, border = colors.get(
+            support["level"], colors["partial"])
+        self.threading_status_label.setStyleSheet(
+            "QLabel {"
+            f"background-color: {background}; color: {foreground}; "
+            f"border: 1px solid {border}; border-radius: 3px; "
+            "padding: 5px;"
+            "}")
+        text = (f"CPU threading: {support['summary']}\n"
+                f"{support['detail']}")
+        self.threading_status_label.setText(text)
+        self.threading_status_label.setToolTip(text)
+
     # ── Simulation ──────────────────────────────────────────────────────────
 
     def _run_simulation(self):
@@ -413,6 +447,7 @@ class SimulationPanel:
             get_last_stop_reason, run_simulation)
         self._stop()
         self._refresh_world_label()
+        self._update_multithreading_status()
         self._sim_stop_requested = False
         self._sim_paused = False
         self.sim_btn.setEnabled(False)

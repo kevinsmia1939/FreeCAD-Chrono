@@ -81,6 +81,7 @@ class _RemoteClient:
 
 _remote_clients = {}
 _next_remote_client = 1
+_capabilities_cache = None
 
 
 def _python_candidates():
@@ -138,6 +139,24 @@ def backend_description():
         client = next(iter(_remote_clients.values()))
         return f"PyChrono bridge via {client.executable}"
     return "system-Python PyChrono bridge"
+
+
+def getCapabilities():
+    """Return PyChrono capability facts without requiring a simulation client."""
+    global _capabilities_cache
+    if _capabilities_cache is not None:
+        return dict(_capabilities_cache)
+    if _native is not None:
+        _capabilities_cache = _native.getCapabilities()
+        return dict(_capabilities_cache)
+
+    process, executable = _start_worker()
+    probe = _RemoteClient(process, None, executable)
+    try:
+        _capabilities_cache = probe.call("getCapabilities")
+    finally:
+        probe.close()
+    return dict(_capabilities_cache)
 
 
 def connect(mode=DIRECT, cpuParallel=True):
