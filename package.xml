@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<package format="1" xmlns="https://wiki.freecad.org/Package_Metadata">
+    <name>Chrono Physics</name>
+    <description>Rigid-body physics simulation workbench powered by pychrono.</description>
+    <version>1.0.0</version>
+    <date>2026-08-29</date>
+    <freecadmin>1.1.0</freecadmin>
+    <pythonmin>3.11</pythonmin>
+    <depend type="python">pychrono</depend>
+    <tag>Workbench</tag>
+    <tag>Simulation</tag>
+    <tag>Physics</tag>
+    <maintainer email="andythe_great@protonmail.com">Kavin Teenakul</maintainer>
+    <author email="andythe_great@protonmail.com">Kavin Teenakul</author>
+    <license file="LICENSE">GPL-3.0-or-later</license>
+    <icon>freecad/Chrono/Resources/Icons/Chrono.svg</icon>
+    <url type="documentation">https://github.com/kevinsmia1939/FreeCAD-Chrono/tree/main/Documentation</url>
+    <url branch="main" type="repository">https://github.com/kevinsmia1939/FreeCAD-Chrono</url>
+    <url type="bugtracker">https://github.com/kevinsmia1939/FreeCAD-Chrono/issues</url>
+    <url type="readme">https://raw.githubusercontent.com/kevinsmia1939/FreeCAD-Chrono/refs/heads/main/README.md</url>
+    <content>
+        <workbench>
+            <subdirectory>.</subdirectory>
+            <classname>ChronoWorkbench</classname>
+        </workbench>
+    </content>
+
+</package>

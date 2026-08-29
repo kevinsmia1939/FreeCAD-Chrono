@@ -1,0 +1,192 @@
+import FreeCAD
+
+
+class ChronoContainerFeature:
+    def __init__(self, obj):
+        obj.addProperty("App::PropertyLink", "World", "Container",
+                        "Physics World settings object")
+        obj.addProperty("App::PropertyLink", "BodyTable", "Container",
+                        "Rigid body summary table")
+        obj.addProperty("App::PropertyLinkList", "RigidBodies", "Container",
+                        "Rigid body objects managed by this simulation")
+        obj.addProperty("App::PropertyLinkList", "Launchers", "Container",
+                        "Velocity launcher objects managed by this simulation")
+        obj.addProperty("App::PropertyLinkList", "Emitters", "Container",
+                        "Rigid body emitter objects managed by this simulation")
+        obj.addProperty("App::PropertyLinkList", "DestroyBodies", "Container",
+                        "Destroy-rigid-body trigger objects")
+        obj.addProperty("App::PropertyLinkList", "Observers", "Container",
+                        "Non-physical rigid-body observer objects")
+        obj.addProperty("App::PropertyLink", "MeshSettings", "Container",
+                        "Global mesh settings shared by every rigid body")
+        obj.addProperty("App::PropertyLink", "RunSimulation", "Container",
+                        "Simulation and playback task object")
+        obj.Proxy = self
+
+    def execute(self, obj):
+        pass
+
+    def onDocumentRestored(self, obj):
+        if not hasattr(obj, "Emitters"):
+            obj.addProperty("App::PropertyLinkList", "Emitters", "Container",
+                            "Rigid body emitter objects managed by this simulation")
+        if not hasattr(obj, "DestroyBodies"):
+            obj.addProperty("App::PropertyLinkList", "DestroyBodies", "Container",
+                            "Destroy-rigid-body trigger objects")
+        if not hasattr(obj, "Observers"):
+            obj.addProperty("App::PropertyLinkList", "Observers", "Container",
+                            "Non-physical rigid-body observer objects")
+        if not hasattr(obj, "MeshSettings"):
+            obj.addProperty("App::PropertyLink", "MeshSettings", "Container",
+                            "Global mesh settings shared by every rigid body")
+        if not hasattr(obj, "RunSimulation"):
+            obj.addProperty("App::PropertyLink", "RunSimulation", "Container",
+                            "Simulation and playback task object")
+
+    def __getstate__(self):
+        return None
+
+    def __setstate__(self, state):
+        return None
+
+
+class ChronoContainerViewProvider:
+    def __init__(self, vobj):
+        vobj.Proxy = self
+
+    def attach(self, vobj):
+        self.Object = vobj.Object
+        from pivy import coin
+        vobj.addDisplayMode(coin.SoGroup(), "Default")
+
+    def getDisplayModes(self, vobj):
+        return ["Default"]
+
+    def getDefaultDisplayMode(self):
+        return "Default"
+
+    def getIcon(self):
+        import os
+        from .. import ChronoUtils
+        return os.path.join(ChronoUtils.ICONS_PATH, "ChronoContainer.svg")
+
+    def claimChildren(self):
+        obj = self.Object
+        children = []
+        if hasattr(obj, "World") and obj.World is not None:
+            children.append(obj.World)
+        if hasattr(obj, "BodyTable") and obj.BodyTable is not None:
+            children.append(obj.BodyTable)
+        if hasattr(obj, "MeshSettings") and obj.MeshSettings is not None:
+            children.append(obj.MeshSettings)
+        if hasattr(obj, "RunSimulation") and obj.RunSimulation is not None:
+            children.append(obj.RunSimulation)
+        if hasattr(obj, "RigidBodies"):
+            children.extend(rb for rb in obj.RigidBodies if rb is not None)
+        if hasattr(obj, "Launchers"):
+            children.extend(ln for ln in obj.Launchers if ln is not None)
+        if hasattr(obj, "Emitters"):
+            children.extend(emitter for emitter in obj.Emitters if emitter is not None)
+        if hasattr(obj, "DestroyBodies"):
+            children.extend(trigger for trigger in obj.DestroyBodies if trigger is not None)
+        if hasattr(obj, "Observers"):
+            children.extend(observer for observer in obj.Observers if observer is not None)
+        return children
+
+    def onChanged(self, vobj, prop):
+        if prop == "Visibility":
+            obj = self.Object
+            visible = vobj.Visibility
+            # Propagate to World
+            if hasattr(obj, "World") and obj.World is not None:
+                try:
+                    obj.World.ViewObject.Visibility = visible
+                except Exception:
+                    pass
+            # Propagate to each RigidBody (which in turn propagates to its Link)
+            if hasattr(obj, "RigidBodies"):
+                for rb in obj.RigidBodies:
+                    if rb is not None:
+                        try:
+                            rb.ViewObject.Visibility = visible
+                        except Exception:
+                            pass
+            if hasattr(obj, "Emitters"):
+                for emitter in obj.Emitters:
+                    if emitter is not None:
+                        try:
+                            emitter.ViewObject.Visibility = visible
+                        except Exception:
+                            pass
+            if hasattr(obj, "DestroyBodies"):
+                for trigger in obj.DestroyBodies:
+                    if trigger is not None:
+                        try:
+                            trigger.ViewObject.Visibility = visible
+                        except Exception:
+                            pass
+            if hasattr(obj, "Observers"):
+                for observer in obj.Observers:
+                    if observer is not None:
+                        try:
+                            observer.ViewObject.Visibility = visible
+                        except Exception:
+                            pass
+
+    def onDelete(self, vobj, subelements):
+        return True
+
+    def __getstate__(self):
+        return None
+
+    def __setstate__(self, state):
+        return None
+
+
+def find_container(doc=None):
+    """Return the first ChronoContainer in the document, or None."""
+    if doc is None:
+        doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return None
+    for obj in doc.Objects:
+        if (hasattr(obj, "Proxy")
+                and type(obj.Proxy).__name__ == "ChronoContainerFeature"):
+            return obj
+    return None
+
+
+def make_container(doc=None):
+    if doc is None:
+        doc = FreeCAD.ActiveDocument
+
+    from .ChronoWorld import ChronoWorldFeature, ChronoWorldViewProvider
+    from .ChronoBodyTable import make_body_table
+    from .ChronoMesh import make_mesh_settings
+    from .ChronoRunSimulation import make_run_simulation
+
+    # Container
+    container = doc.addObject("App::FeaturePython", "Chrono")
+    ChronoContainerFeature(container)
+    container.Label = "Chrono Physics"
+
+    # World inside container
+    world = doc.addObject("App::FeaturePython", "ChronoWorld")
+    ChronoWorldFeature(world)
+    world.Label = "Physics World"
+    container.World = world
+
+    # Body summary table inside container
+    table = make_body_table(doc)
+    container.BodyTable = table
+
+    make_mesh_settings(container)
+    make_run_simulation(container)
+
+    if FreeCAD.GuiUp:
+        import FreeCADGui
+        ChronoContainerViewProvider(container.ViewObject)
+        ChronoWorldViewProvider(world.ViewObject)
+
+    doc.recompute()
+    return container

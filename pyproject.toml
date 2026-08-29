@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freecad-chronophysics"
+version = "1.0.0"
+description = "Rigid-body physics simulation workbench for FreeCAD powered by pychrono."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "GPL-3.0-or-later" }
+authors = [
+    { name = "Kavin Teenakul", email = "andythe_great@protonmail.com" },
+]
+dependencies = [
+    "pychrono",
+]
+
+[tool.setuptools.packages.find]
+include = ["freecad.Chrono*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"freecad.Chrono" = ["Resources/Icons/*.svg"]
