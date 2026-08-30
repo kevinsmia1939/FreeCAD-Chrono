@@ -54,9 +54,35 @@ class RigidBodyFeature:
         obj.addProperty("App::PropertyEnumeration", "ShapeOverride", "RigidBody",
                         "Override the auto-detected collision shape type. "
                         "'Auto' uses the shape detected from geometry. "
+                        "'cylindrical_shell' = inward-facing analytical cylinder "
+                        "for a Fixed bed (requires CPU parallelization). "
                         "'mesh' = concave BVH (static only). "
                         "'convex_hull' = convex hull (works for dynamic bodies).")
-        obj.ShapeOverride = ["Auto", "box", "sphere", "cylinder", "convex_hull", "mesh"]
+        obj.ShapeOverride = ["Auto", "box", "sphere", "cylinder",
+                             "cylindrical_shell", "convex_hull", "mesh"]
+        obj.addProperty("App::PropertyLength", "CylindricalShellRadius",
+                        "Analytical Cylindrical Shell",
+                        "Inner collision radius. Set to 0 mm to infer the "
+                        "smallest cylindrical-face radius.")
+        obj.CylindricalShellRadius = 0.0
+        obj.addProperty("App::PropertyLength", "CylindricalShellHeight",
+                        "Analytical Cylindrical Shell",
+                        "Container collision height. Set to 0 mm to use the "
+                        "body-local Z extent.")
+        obj.CylindricalShellHeight = 0.0
+        obj.addProperty("App::PropertyLength", "CylindricalShellAxialOffset",
+                        "Analytical Cylindrical Shell",
+                        "Offset of the shell centre along body-local +Z. Use "
+                        "this with a reduced height to align a thick cavity floor.")
+        obj.CylindricalShellAxialOffset = 0.0
+        obj.addProperty("App::PropertyBool", "CylindricalShellBottomCap",
+                        "Analytical Cylindrical Shell",
+                        "Close the local -Z end with an inward-facing flat cap.")
+        obj.CylindricalShellBottomCap = True
+        obj.addProperty("App::PropertyBool", "CylindricalShellTopCap",
+                        "Analytical Cylindrical Shell",
+                        "Close the local +Z end with an inward-facing flat cap.")
+        obj.CylindricalShellTopCap = False
         obj.Proxy = self
 
     def execute(self, obj):
@@ -91,6 +117,27 @@ class RigidBodyFeature:
         for name in ("Friction", "MeshResolution"):
             if hasattr(obj, name):
                 obj.removeProperty(name)
+        selected_shape = getattr(obj, "ShapeOverride", "Auto")
+        shape_options = ["Auto", "box", "sphere", "cylinder",
+                         "cylindrical_shell", "convex_hull", "mesh"]
+        obj.ShapeOverride = shape_options
+        obj.ShapeOverride = (selected_shape if selected_shape in shape_options
+                             else "Auto")
+        for name, property_type, description, default in (
+                ("CylindricalShellRadius", "App::PropertyLength",
+                 "Inner collision radius; 0 mm selects automatic detection", 0.0),
+                ("CylindricalShellHeight", "App::PropertyLength",
+                 "Collision height; 0 mm uses the body-local Z extent", 0.0),
+                ("CylindricalShellAxialOffset", "App::PropertyLength",
+                 "Shell-centre offset along body-local +Z", 0.0),
+                ("CylindricalShellBottomCap", "App::PropertyBool",
+                 "Close the body-local -Z end", True),
+                ("CylindricalShellTopCap", "App::PropertyBool",
+                 "Close the body-local +Z end", False)):
+            if not hasattr(obj, name):
+                obj.addProperty(property_type, name,
+                                "Analytical Cylindrical Shell", description)
+                setattr(obj, name, default)
 
     def onChanged(self, obj, prop):
         if prop == "BodyType" and getattr(obj, "BodyLink", None) is not None:

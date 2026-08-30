@@ -21,6 +21,7 @@ GEOM_BOX = 3
 GEOM_CYLINDER = 4
 GEOM_MESH = 5
 GEOM_COMPOUND = 6
+GEOM_CYLINDRICAL_SHELL = 7
 GEOM_CONCAVE_INTERNAL_EDGE = 1
 
 # Chrono accepts any consistent unit system, while its NSC solver and collision
@@ -103,6 +104,10 @@ def getCapabilities():
             and hasattr(collision_system, "Type_MULTICORE")),
         "multicore_nsc_system_available": hasattr(
             chrono, "ChSystemMulticoreNSC"),
+        "capped_cylindrical_shell_available": bool(
+            hasattr(chrono, "ChCollisionShapeCylindricalShell")
+            and hasattr(chrono.ChCollisionShapeCylindricalShell,
+                        "IsBottomClosed")),
         "thread_count": max(1, os.cpu_count() or 1),
         # Chrono 10 has dedicated triangle narrow-phase paths for these shapes.
         # Cylinder/capsule/convex contacts use its generic path, which can
@@ -143,6 +148,8 @@ def _shape_radius(meta):
         return math.sqrt(sum(value * value for value in meta["half_extents"]))
     if kind == GEOM_CYLINDER:
         return math.hypot(meta["radius"], meta["height"] * 0.5)
+    if kind == GEOM_CYLINDRICAL_SHELL:
+        return math.hypot(meta["radius"], meta["height"] * 0.5)
     if kind == GEOM_MESH:
         return max((math.sqrt(sum(value * value for value in point))
                     for point in meta["vertices"]), default=0.0)
@@ -164,6 +171,8 @@ def _shape_min_extent(meta):
     if kind == GEOM_BOX:
         return min(meta["half_extents"])
     if kind == GEOM_CYLINDER:
+        return min(meta["radius"], meta["height"] * 0.5)
+    if kind == GEOM_CYLINDRICAL_SHELL:
         return min(meta["radius"], meta["height"] * 0.5)
     if kind == GEOM_MESH:
         vertices = meta["vertices"]
@@ -201,6 +210,12 @@ def _inertia(meta, mass):
         radial = mass * (3.0 * radius * radius + height * height) / 12.0
         axial = 0.5 * mass * radius * radius
         return (radial, radial, axial)
+    if kind == GEOM_CYLINDRICAL_SHELL:
+        radius = meta["radius"]
+        height = meta["height"]
+        radial = mass * (6.0 * radius * radius + height * height) / 12.0
+        axial = mass * radius * radius
+        return (radial, radial, axial)
     # A conservative spherical estimate is robust for arbitrary CAD meshes and
     # compounds.  Chrono requires an inertia tensor whereas PyBullet inferred it.
     radius = max(_shape_radius(meta), 1e-6)
@@ -216,9 +231,12 @@ def _build_shape(meta, material, is_static):
     if kind == GEOM_SPHERE:
         return chrono.ChCollisionShapeSphere(material, meta["radius"])
     if kind == GEOM_CYLINDER:
-        # Chrono 10's analytic cylinder/triangle narrow phase is unstable for
-        # concave containers.  A 24-sided convex prism retains the cylinder's
-        # dimensions (under 1% radial error) and uses the robust convex path.
+        if meta.get("analytical", False):
+            return chrono.ChCollisionShapeCylinder(
+                material, meta["radius"], meta["height"])
+        # Preserve the workaround used for legacy triangle-mesh beds.  The
+        # capped analytical shell explicitly opts cylinders into the true
+        # Chrono primitive so the multicore cylinder-shell dispatcher is used.
         points = chrono.vector_ChVector3d()
         radius = meta["radius"]
         half_height = meta["height"] * 0.5
@@ -228,6 +246,10 @@ def _build_shape(meta, material, is_static):
                 points.push_back(chrono.ChVector3d(
                     radius * math.cos(angle), radius * math.sin(angle), z))
         return chrono.ChCollisionShapeConvexHull(material, points)
+    if kind == GEOM_CYLINDRICAL_SHELL:
+        return chrono.ChCollisionShapeCylindricalShell(
+            material, meta["radius"], meta["height"],
+            meta["closed_bottom"], meta["closed_top"])
     if kind == GEOM_MESH:
         vertices = meta["vertices"]
         indices = meta.get("indices")
@@ -255,7 +277,14 @@ def _build_shape(meta, material, is_static):
 def _add_shape_to_body(client, body, shape_id, material, is_static):
     meta = client.shapes[shape_id]
     if meta["kind"] != GEOM_COMPOUND:
-        body.AddCollisionShape(_build_shape(meta, material, is_static))
+        shape = _build_shape(meta, material, is_static)
+        if meta["kind"] == GEOM_CYLINDRICAL_SHELL:
+            frame = chrono.ChFramed(
+                chrono.ChVector3d(0.0, 0.0, meta["axial_offset"]),
+                chrono.ChQuaterniond(1.0, 0.0, 0.0, 0.0))
+            body.AddCollisionShape(shape, frame)
+        else:
+            body.AddCollisionShape(shape)
         return
     for child_id, position, orientation in zip(
             meta["children"], meta["positions"], meta["orientations"]):
@@ -317,6 +346,14 @@ def createCollisionShape(shapeType, physicsClientId=0, **parameters):
     elif shapeType == GEOM_CYLINDER:
         meta["radius"] = float(parameters["radius"]) * _LENGTH_SCALE
         meta["height"] = float(parameters["height"]) * _LENGTH_SCALE
+        meta["analytical"] = bool(parameters.get("analytical", False))
+    elif shapeType == GEOM_CYLINDRICAL_SHELL:
+        meta["radius"] = float(parameters["radius"]) * _LENGTH_SCALE
+        meta["height"] = float(parameters["height"]) * _LENGTH_SCALE
+        meta["axial_offset"] = float(
+            parameters.get("axialOffset", 0.0)) * _LENGTH_SCALE
+        meta["closed_bottom"] = bool(parameters.get("closedBottom", True))
+        meta["closed_top"] = bool(parameters.get("closedTop", False))
     elif shapeType == GEOM_MESH:
         meta["vertices"] = [tuple(float(v) * _LENGTH_SCALE for v in point)
                             for point in parameters["vertices"]]

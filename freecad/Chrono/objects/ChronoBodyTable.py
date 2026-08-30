@@ -34,7 +34,8 @@ class BodyTablePanel:
         "Collision Shape",
     ]
 
-    _SHAPE_OPTIONS = ["Auto", "box", "sphere", "cylinder", "convex_hull", "mesh"]
+    _SHAPE_OPTIONS = ["Auto", "box", "sphere", "cylinder",
+                      "cylindrical_shell", "convex_hull", "mesh"]
 
     def __init__(self):
         from PySide import QtCore, QtWidgets
@@ -98,7 +99,9 @@ class BodyTablePanel:
         self.inp_shape.addItems([""] + self._SHAPE_OPTIONS)
         self.inp_shape.setToolTip(
             "Override the collision shape type for the selected rows.\n"
-            "'Auto' restores automatic detection from geometry.")
+            "'Auto' restores automatic detection from geometry.\n"
+            "'cylindrical_shell' is a Fixed inward-facing analytical bed; "
+            "configure its radius, height, offset, and caps in Data properties.")
         grid.addWidget(self.inp_shape, 2, 1)
         self.btn_apply_shape = QtWidgets.QPushButton("Apply")
         grid.addWidget(self.btn_apply_shape, 2, 2)

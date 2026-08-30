@@ -403,7 +403,9 @@ class EmitterPanel:
         self.type_combo.addItems(["Dynamic", "Fixed"])
         self.type_combo.setCurrentText(_canonical_body_type(getattr(emitter, "BodyType", "Dynamic")))
         self.count_spin = QtWidgets.QSpinBox()
-        self.count_spin.setRange(1, 10000)
+        # QSpinBox and FreeCAD's App::PropertyInteger use signed 32-bit values.
+        # Use their full positive range instead of imposing an emitter UI cap.
+        self.count_spin.setRange(1, 2147483647)
         self.count_spin.setValue(max(1, getattr(emitter, "Count", 1)))
         self.rate_check = QtWidgets.QCheckBox("Use particles per second")
         self.rate_check.setChecked(getattr(emitter, "UseParticlesPerSecond", False))

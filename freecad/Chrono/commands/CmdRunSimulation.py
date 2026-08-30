@@ -411,6 +411,7 @@ class SimulationPanel:
             "supported": ("#173d25", "#b7f5ca", "#3a9d5d"),
             "partial": ("#493613", "#ffe6a3", "#b88622"),
             "off": ("#30343b", "#d9dde5", "#747b87"),
+            "blocked": ("#4d1717", "#ffd0d0", "#c74646"),
         }
         background, foreground, border = colors.get(
             support["level"], colors["partial"])

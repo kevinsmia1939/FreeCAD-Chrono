@@ -523,6 +523,7 @@ def multithreading_support(cpu_parallel=True, capabilities=None, contact_model="
                 "chrono_version": "unknown",
                 "multicore_collision_available": False,
                 "multicore_nsc_system_available": False,
+                "capped_cylindrical_shell_available": False,
                 "thread_count": 1,
                 "multicore_concave_dynamic_shapes": [],
                 "probe_error": str(exc),
@@ -536,24 +537,12 @@ def multithreading_support(cpu_parallel=True, capabilities=None, contact_model="
         "multicore_nsc_system_available": bool(
             capabilities.get("multicore_nsc_system_available", False)),
     }
-    if not cpu_parallel:
-        return dict(base, level="off", collision_backend="BULLET",
-                    summary="Disabled by Chrono System setting",
-                    detail="Enable CPU parallelization to use available threads.")
-
-    if not capabilities.get("multicore_collision_available", False):
-        detail = (f"PyChrono {version} does not expose the MULTICORE collision "
-                  "backend in this build. Bullet collision will be used; "
-                  "Chrono/Eigen worker threads can still be assigned.")
-        if capabilities.get("probe_error"):
-            detail += f" Capability probe failed: {capabilities['probe_error']}"
-        return dict(base, level="partial", collision_backend="BULLET",
-                    summary="Threaded core only; multicore collision unavailable",
-                    detail=detail)
 
     rigid_bodies = collect_rigid_bodies()
     emitters = collect_emitters(enabled_only=True)
     static_meshes = []
+    static_shells = []
+    dynamic_shells = []
     dynamic_types = {}
     for rb in rigid_bodies:
         original = getattr(rb, "OriginalObject", None)
@@ -564,6 +553,12 @@ def multithreading_support(cpu_parallel=True, capabilities=None, contact_model="
             original.Shape, override, _is_fixed_body_type(rb.BodyType))
         if _is_fixed_body_type(rb.BodyType) and kind == "mesh":
             static_meshes.append(rb.Label)
+        elif (_is_fixed_body_type(rb.BodyType)
+              and kind == "cylindrical_shell"):
+            static_shells.append(rb.Label)
+        elif (_is_dynamic_body_type(rb.BodyType)
+              and kind == "cylindrical_shell"):
+            dynamic_shells.append(rb.Label)
         elif _is_dynamic_body_type(rb.BodyType):
             dynamic_types.setdefault(kind, []).append(rb.Label)
     for emitter in emitters:
@@ -573,6 +568,52 @@ def multithreading_support(cpu_parallel=True, capabilities=None, contact_model="
             kind = _configured_shape_type(template.Shape)
             dynamic_types.setdefault(kind, []).append(
                 f"{emitter.Label} → {template.Label}")
+
+    base["uses_capped_cylindrical_shell"] = bool(
+        static_shells or dynamic_shells)
+    if dynamic_shells:
+        return dict(
+            base, level="blocked", collision_backend="BULLET", blocking=True,
+            summary="Analytical cylindrical shell requires a Fixed body",
+            detail=("Change these rigid bodies to Fixed: "
+                    f"{', '.join(dynamic_shells)}. The capped shell is an "
+                    "inward-facing container, not a dynamic solid."))
+
+    if not cpu_parallel:
+        if static_shells:
+            return dict(
+                base, level="blocked", collision_backend="BULLET", blocking=True,
+                summary="Analytical cylindrical shell requires CPU parallelization",
+                detail=("Enable CPU parallelization in the Simulation panel. "
+                        "The capped cylinder-shell contact is implemented in "
+                        "Chrono's MULTICORE primitive narrowphase."))
+        return dict(base, level="off", collision_backend="BULLET",
+                    blocking=False,
+                    summary="Disabled by Chrono System setting",
+                    detail="Enable CPU parallelization to use available threads.")
+
+    if not capabilities.get("multicore_collision_available", False):
+        detail = (f"PyChrono {version} does not expose the MULTICORE collision "
+                  "backend in this build. Bullet collision will be used; "
+                  "Chrono/Eigen worker threads can still be assigned.")
+        if capabilities.get("probe_error"):
+            detail += f" Capability probe failed: {capabilities['probe_error']}"
+        level = "blocked" if static_shells else "partial"
+        if static_shells:
+            detail += " The configured analytical cylindrical shell cannot run."
+        return dict(base, level=level, collision_backend="BULLET",
+                    blocking=bool(static_shells),
+                    summary="Threaded core only; multicore collision unavailable",
+                    detail=detail)
+
+    if (static_shells
+            and not capabilities.get("capped_cylindrical_shell_available", False)):
+        return dict(
+            base, level="blocked", collision_backend="MULTICORE", blocking=True,
+            summary="Installed Chrono lacks capped cylindrical-shell support",
+            detail=(f"PyChrono {version} does not expose the patched "
+                    "ChCollisionShapeCylindricalShell API. Install the updated "
+                    "projectchrono RPMs before using this collision shape."))
 
     supported = set(capabilities.get(
         "multicore_concave_dynamic_shapes", ("sphere", "box")))
@@ -587,9 +628,32 @@ def multithreading_support(cpu_parallel=True, capabilities=None, contact_model="
             f"Affected dynamic geometry: {geometry}. Bullet collision is selected "
             "to preserve openings and cavities; Chrono/Eigen worker threads remain enabled."
         )
+        if static_shells:
+            detail += (" This Bullet fallback conflicts with the configured "
+                       "analytical cylindrical shell; separate the two setups "
+                       "or replace the other fixed mesh with supported primitives.")
+            return dict(base, level="blocked", collision_backend="BULLET",
+                        blocking=True,
+                        summary="Mesh fallback conflicts with analytical shell",
+                        detail=detail)
         return dict(base, level="partial", collision_backend="BULLET",
+                    blocking=False,
                     summary="Threaded core; Bullet collision fallback required",
                     detail=detail)
+
+    if static_shells:
+        shell_unsupported = sorted(
+            kind for kind in dynamic_types if kind != "cylinder")
+        if shell_unsupported:
+            geometry = ", ".join(
+                f"{kind}: {', '.join(dynamic_types[kind])}"
+                for kind in shell_unsupported)
+            return dict(
+                base, level="blocked", collision_backend="MULTICORE", blocking=True,
+                summary="Analytical shell supports cylindrical dynamic bodies only",
+                detail=(f"Fixed shell: {', '.join(static_shells)}. Unsupported "
+                        f"dynamic geometry: {geometry}. The new Chrono primitive "
+                        "contact currently implements cylinder–shell pairs."))
 
     nsc_note = (" The installed PyChrono binding does not expose "
                 "ChSystemMulticoreNSC, so the NSC dynamics system itself remains "
@@ -600,9 +664,16 @@ def multithreading_support(cpu_parallel=True, capabilities=None, contact_model="
         base,
         level="supported",
         collision_backend="MULTICORE",
-        summary=f"Multicore collision and threaded core ({threads} threads)",
-        detail=(f"Chrono {version} supports this setup with MULTICORE collision "
-                f"and {threads} Chrono/Eigen worker threads.{nsc_note}"),
+        blocking=False,
+        summary=(f"Analytical cylinder bed; multicore collision ({threads} threads)"
+                 if static_shells else
+                 f"Multicore collision and threaded core ({threads} threads)"),
+        detail=((f"Chrono {version} will use capped analytical cylindrical-shell "
+                 f"contact for {', '.join(static_shells)} and true analytical "
+                 f"cylinders with {threads} collision/core threads.{nsc_note}")
+                if static_shells else
+                (f"Chrono {version} supports this setup with MULTICORE collision "
+                 f"and {threads} Chrono/Eigen worker threads.{nsc_note}")),
     )
 
 
@@ -756,10 +827,51 @@ def _tessellate_to_local(fc_shape, orig_pl, world_center, precision,
     return verts_local, flat_indices
 
 
+def _property_length_mm(value):
+    """Return a FreeCAD length property as a plain millimetre value."""
+    return float(getattr(value, "Value", value))
+
+
+def _cylindrical_shell_dimensions(fc_shape, half_extents, options):
+    """Return analytical shell radius, height, and axial offset in metres."""
+    options = options or {}
+    radius_mm = max(0.0, _property_length_mm(options.get("radius", 0.0)))
+    height_mm = max(0.0, _property_length_mm(options.get("height", 0.0)))
+    offset_mm = _property_length_mm(options.get("axial_offset", 0.0))
+
+    if radius_mm <= 0.0:
+        radii = []
+        for face in fc_shape.Faces:
+            surface = getattr(face, "Surface", None)
+            if surface is not None and "Cylinder" in type(surface).__name__:
+                try:
+                    radii.append(float(surface.Radius))
+                except Exception:
+                    pass
+        positive_radii = [radius for radius in radii if radius > 0.0]
+        if positive_radii:
+            # A CAD tube normally has outer and inner cylindrical faces.  The
+            # smaller face is the cavity boundary required by an inward shell.
+            radius_mm = min(positive_radii)
+        else:
+            radius_mm = (half_extents[0] + half_extents[1]) * 0.5 / MM_TO_M
+
+    if height_mm <= 0.0:
+        # The primitive is oriented along body-local Z, matching the existing
+        # analytical cylinder convention in the workbench.
+        height_mm = 2.0 * half_extents[2] / MM_TO_M
+
+    if radius_mm <= 0.0 or height_mm <= 0.0:
+        raise ValueError("cylindrical shell radius and height must be positive")
+    return (radius_mm * MM_TO_M, height_mm * MM_TO_M,
+            offset_mm * MM_TO_M)
+
+
 def _make_collision_shape(p, fc_shape, half_extents, orig_pl, world_center,
                           client, is_static=False, mesh_resolution=1.0,
                           forced_type=None, collision_margin=0.001,
-                          source_mesh=None):
+                          source_mesh=None, analytical_cylinder=False,
+                          shell_options=None):
     """
     Create the most accurate Chrono collision shape for fc_shape.
 
@@ -769,7 +881,7 @@ def _make_collision_shape(p, fc_shape, half_extents, orig_pl, world_center,
       - 'convex_hull' / dynamic auto: btConvexHullShape — convex approx, dynamic-safe
 
     *forced_type* overrides auto-detection: 'box', 'sphere', 'cylinder',
-    'convex_hull', or 'mesh'.
+    'cylindrical_shell', 'convex_hull', or 'mesh'.
 
     Returns (collision_shape_id, characteristic_radius_m).
     """
@@ -805,9 +917,37 @@ def _make_collision_shape(p, fc_shape, half_extents, orig_pl, world_center,
             p.GEOM_CYLINDER,
             radius=radius,
             height=height,
+            analytical=bool(analytical_cylinder),
             physicsClientId=client,
         )
         return col, math.hypot(radius, height * 0.5)
+
+    if shape_type == "cylindrical_shell":
+        if not is_static:
+            raise ValueError(
+                "analytical cylindrical_shell collision requires a Fixed rigid body")
+        radius, height, axial_offset = _cylindrical_shell_dimensions(
+            fc_shape, half_extents, shell_options)
+        options = shell_options or {}
+        closed_bottom = bool(options.get("closed_bottom", True))
+        closed_top = bool(options.get("closed_top", False))
+        col = p.createCollisionShape(
+            p.GEOM_CYLINDRICAL_SHELL,
+            radius=radius,
+            height=height,
+            axialOffset=axial_offset,
+            closedBottom=closed_bottom,
+            closedTop=closed_top,
+            physicsClientId=client,
+        )
+        FreeCAD.Console.PrintMessage(
+            "Chrono: analytical cylindrical shell "
+            f"(radius={radius / MM_TO_M:g} mm, "
+            f"height={height / MM_TO_M:g} mm, "
+            f"offset={axial_offset / MM_TO_M:g} mm, "
+            f"bottom={'closed' if closed_bottom else 'open'}, "
+            f"top={'closed' if closed_top else 'open'})\n")
+        return col, min(radius, height * 0.5)
 
     if shape_type == "box":
         col = p.createCollisionShape(
@@ -1091,7 +1231,14 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
     threading = multithreading_support(
         cpu_parallel=bool(cpu_parallel), capabilities=p.getCapabilities(),
         contact_model=contact_model)
+    if threading.get("blocking", False):
+        message = f"{threading['summary']}. {threading['detail']}"
+        _set_last_error(message)
+        FreeCAD.Console.PrintError(f"Chrono: {message}\n")
+        return None
     collision_parallel = threading["collision_backend"] == "MULTICORE"
+    analytical_cylinders = bool(
+        threading.get("uses_capped_cylindrical_shell", False))
     if cpu_parallel and threading["level"] == "partial":
         # This is an informational capability report, not a simulation
         # failure.  Keep it in FreeCAD's Report View instead of presenting a
@@ -1149,11 +1296,6 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
     # Simulation-time at which each body was created. Regular bodies begin at
     # zero; emitted particles begin at their actual materialization time.
     body_birth_times = {}
-    # Conservative bounding radii (metres) used to prevent an emitter from
-    # creating two initially overlapping Chrono bodies.
-    body_characteristic_radii = {}
-    warned_waiting_emitters = set()
-    warned_out_of_range_bodies = set()
     # Emitted active bodies scheduled to become static at a simulation time.
     passivate_at = {}
     passivated_body_ids = set()
@@ -1332,7 +1474,8 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                 p, template_shape, half, template_pl, template_center, client,
                 is_static=is_static, mesh_resolution=mesh_resolution,
                 collision_margin=collision_margin,
-                source_mesh=_generated_mesh_for_source(mesh_settings, template))
+                source_mesh=_generated_mesh_for_source(mesh_settings, template),
+                analytical_cylinder=analytical_cylinders)
             local_offset = template_pl.Rotation.inverted().multVec(
                 template_center - template_pl.Base)
             mass = 0.0 if is_static else density * template_shape.Volume * 1e-9
@@ -1435,56 +1578,10 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         (col, characteristic_radius, mass, local_offset,
          restitution, friction) = emitter_configs[emitter.Name][template.Name]
 
-        center = None
-        for _attempt in range(16):
-            candidate = _sample_emission_point(emitter.EmissionSource.Shape, rng)
-            candidate_m = (candidate.x * MM_TO_M,
-                           candidate.y * MM_TO_M,
-                           candidate.z * MM_TO_M)
-            clear = True
-            for existing_id, existing_radius in body_characteristic_radii.items():
-                if existing_id not in body_map:
-                    continue
-                position, _orientation = p.getBasePositionAndOrientation(
-                    existing_id, physicsClientId=client)
-                minimum = characteristic_radius + existing_radius
-                differences = tuple(
-                    candidate_m[axis] - position[axis] for axis in range(3))
-                if (not math.isfinite(minimum)
-                        or not all(math.isfinite(value) for value in differences)):
-                    # An unstable contact solve can launch a body far enough
-                    # that squaring its coordinate difference overflows. It
-                    # cannot occupy the local emission volume, so ignore it
-                    # for this guard and report the numerical problem once.
-                    if existing_id not in warned_out_of_range_bodies:
-                        warned_out_of_range_bodies.add(existing_id)
-                        FreeCAD.Console.PrintWarning(
-                            "Chrono: ignoring out-of-range particle '{}' in "
-                            "the emitter overlap check; reduce the time step "
-                            "or increase integration substeps.\n".format(
-                                body_map[existing_id][1].Label))
-                    continue
-                # First reject distant bodies without squaring their position
-                # difference. Only values below the local contact radius are
-                # squared, which keeps this check finite even after a solver
-                # instability has produced very large coordinates.
-                if any(abs(value) >= minimum for value in differences):
-                    continue
-                separation_sq = sum(value * value for value in differences)
-                if separation_sq < minimum * minimum:
-                    clear = False
-                    break
-            if clear:
-                center = candidate
-                break
-        if center is None:
-            if emitter.Name not in warned_waiting_emitters:
-                FreeCAD.Console.PrintWarning(
-                    f"Chrono: delaying emissions from '{emitter.Label}' because "
-                    "its source is occupied. This prevents overlapping bodies "
-                    "and unstable contact constraints.\n")
-                warned_waiting_emitters.add(emitter.Name)
-            return False
+        # Emit at the sampled source position without a workbench-level overlap
+        # guard. Initial contacts and any interpenetration are left for Chrono's
+        # contact solver to resolve.
+        center = _sample_emission_point(emitter.EmissionSource.Shape, rng)
 
         rotation = _emitter_rotation(emitter, rng)
         link = FreeCAD.ActiveDocument.addObject(
@@ -1546,7 +1643,6 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             link.ViewObject.Visibility = True
         body_map[body_id] = (emitter, link, local_offset, True)
         body_birth_times[body_id] = emission_time
-        body_characteristic_radii[body_id] = characteristic_radius
         become_passive_after = max(
             0.0, getattr(emitter, "BecomePassiveAfter", 0.0))
         if mass > 0.0 and become_passive_after > 0.0:
@@ -1793,7 +1889,6 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
 
         for body_id, trigger in destroyed.items():
             body_config, link, _local_offset, is_emitted = body_map.pop(body_id)
-            body_characteristic_radii.pop(body_id, None)
             body_label = body_config.Label
             launch_map.pop(body_id, None)
             passivate_at.pop(body_id, None)
@@ -1912,11 +2007,22 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             effective_res = mesh_resolution
             override = getattr(rb, "ShapeOverride", "Auto")
             forced_type = None if override == "Auto" else override
+            shell_options = {
+                "radius": getattr(rb, "CylindricalShellRadius", 0.0),
+                "height": getattr(rb, "CylindricalShellHeight", 0.0),
+                "axial_offset": getattr(
+                    rb, "CylindricalShellAxialOffset", 0.0),
+                "closed_bottom": getattr(
+                    rb, "CylindricalShellBottomCap", True),
+                "closed_top": getattr(rb, "CylindricalShellTopCap", False),
+            }
             col, characteristic_radius = _make_collision_shape(
                 p, shape, half, orig_pl, world_center, client,
                 is_static=is_static, mesh_resolution=effective_res,
                 forced_type=forced_type, collision_margin=collision_margin,
-                source_mesh=_generated_mesh_for_source(mesh_settings, original))
+                source_mesh=_generated_mesh_for_source(mesh_settings, original),
+                analytical_cylinder=analytical_cylinders,
+                shell_options=shell_options)
 
             rot_q = orig_pl.Rotation.Q      # (x, y, z, w)
             if _is_dynamic_body_type(rb.BodyType):
@@ -1993,8 +2099,6 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
 
             body_map[body_id] = (rb, link, local_offset, False)
             body_birth_times[body_id] = 0.0
-            if mass > 0.0:
-                body_characteristic_radii[body_id] = characteristic_radius
 
         emit_scheduled_particles(0)
 
@@ -2274,7 +2378,8 @@ def delete_simulation_cache(doc=None):
 # Collision wireframe visualisation
 # ---------------------------------------------------------------------------
 
-def _build_collision_wireframe_shape(fc_shape, orig_pl, forced_type=None):
+def _build_collision_wireframe_shape(fc_shape, orig_pl, forced_type=None,
+                                     shell_options=None):
     """
     Return (part_shape, local_offset_mm) where part_shape is a Part solid
     representing the collision envelope, centered at its local origin (so that
@@ -2284,7 +2389,8 @@ def _build_collision_wireframe_shape(fc_shape, orig_pl, forced_type=None):
     local_offset_mm is the FreeCAD-unit (mm) vector from orig_pl.Base to the
     collision centre, expressed in the body's local frame.
 
-    *forced_type* overrides auto-detection ('box', 'sphere', 'cylinder', 'mesh', 'convex_hull').
+    *forced_type* overrides auto-detection ('box', 'sphere', 'cylinder',
+    'cylindrical_shell', 'mesh', 'convex_hull').
     """
     import Part
 
@@ -2318,6 +2424,17 @@ def _build_collision_wireframe_shape(fc_shape, orig_pl, forced_type=None):
             half_sorted = sorted(half)
             radius = (half_sorted[0] + half_sorted[1]) / 2.0
             height = half_sorted[2] * 2.0
+        wf = Part.makeCylinder(radius, height)
+        mat = FreeCAD.Matrix()
+        mat.move(FreeCAD.Vector(0.0, 0.0, -height / 2.0))
+        wf = wf.transformGeometry(mat)
+
+    elif shape_type == "cylindrical_shell":
+        radius_m, height_m, axial_offset_m = _cylindrical_shell_dimensions(
+            fc_shape, [value * MM_TO_M for value in half], shell_options)
+        radius = radius_m / MM_TO_M
+        height = height_m / MM_TO_M
+        local_offset += FreeCAD.Vector(0.0, 0.0, axial_offset_m / MM_TO_M)
         wf = Part.makeCylinder(radius, height)
         mat = FreeCAD.Matrix()
         mat.move(FreeCAD.Vector(0.0, 0.0, -height / 2.0))
@@ -2361,8 +2478,14 @@ def create_collision_wireframes(doc=None):
 
         override = getattr(rb, "ShapeOverride", "Auto")
         forced_type = None if override == "Auto" else override
+        shell_options = {
+            "radius": getattr(rb, "CylindricalShellRadius", 0.0),
+            "height": getattr(rb, "CylindricalShellHeight", 0.0),
+            "axial_offset": getattr(rb, "CylindricalShellAxialOffset", 0.0),
+        }
         wf_shape, extra = _build_collision_wireframe_shape(
-            fc_shape, orig_pl, forced_type=forced_type)
+            fc_shape, orig_pl, forced_type=forced_type,
+            shell_options=shell_options)
 
         obj = doc.addObject("Part::Feature", f"_ChWF_{rb.Label}")
         obj.Label  = f"Collision: {rb.Label}"

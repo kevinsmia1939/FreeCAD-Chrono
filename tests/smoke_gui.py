@@ -51,6 +51,15 @@ try:
     assert "Bullet collision fallback" in threading_text, threading_text
     assert "convex_hull" in threading_text, threading_text
     panel.reject()
+
+    # The emitter count editor must not impose the former 10,000-particle cap.
+    from freecad.Chrono.objects.ChronoEmitter import EmitterPanel
+    emitter = container.Emitters[0]
+    emitter_panel = EmitterPanel(emitter)
+    assert emitter_panel.count_spin.maximum() == 2147483647
+    emitter_panel.count_spin.setValue(1234567)
+    emitter_panel._save()
+    assert emitter.Count == 1234567
 finally:
     FreeCAD.closeDocument(document.Name)
 print("Chrono GUI workbench and all parity commands: PASS")

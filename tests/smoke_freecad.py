@@ -82,6 +82,51 @@ try:
     assert 0.0003 < rod_position[2] < 0.003, rod_position
     assert rod_contacts, "Millimetre cylinder did not contact triangle floor"
 
+    # Patched Chrono regression: true analytical cylinders must remain inside
+    # an open-top capped cylindrical shell using MULTICORE collision.
+    physics.setTimeStep(2.0e-5, physicsClientId=client)
+    shell_shape = physics.createCollisionShape(
+        physics.GEOM_CYLINDRICAL_SHELL,
+        radius=0.006,
+        height=0.030,
+        axialOffset=0.0,
+        closedBottom=True,
+        closedTop=False,
+        physicsClientId=client,
+    )
+    analytical_rod_shape = physics.createCollisionShape(
+        physics.GEOM_CYLINDER,
+        radius=0.00048,
+        height=0.00090,
+        analytical=True,
+        physicsClientId=client,
+    )
+    shell = physics.createMultiBody(
+        0.0, shell_shape, (10.0, 0.0, 0.0), physicsClientId=client)
+    # Initialize the collision system before creating particles, matching the
+    # workbench emitter path where each generated body is bound at runtime.
+    physics.stepSimulation(physicsClientId=client)
+    shell_particles = []
+    for index in range(24):
+        x = 10.0 + ((index % 4) - 1.5) * 0.0011
+        y = (((index // 4) % 3) - 1.0) * 0.0011
+        z = -0.011 + (index // 12) * 0.0012
+        shell_particles.append(physics.createMultiBody(
+            4.0e-7, analytical_rod_shape, (x, y, z),
+            physicsClientId=client))
+    for _step in range(1500):
+        physics.stepSimulation(physicsClientId=client)
+    for particle in shell_particles:
+        position, _rotation = physics.getBasePositionAndOrientation(
+            particle, physicsClientId=client)
+        radial = math.hypot(position[0] - 10.0, position[1])
+        assert all(math.isfinite(value) for value in position), position
+        assert radial < 0.0065, position
+        assert position[2] > -0.016, position
+    shell_contacts = physics.getContactPoints(
+        bodyA=shell, physicsClientId=client)
+    assert shell_contacts, "Analytical cylindrical shell reported no contacts"
+
     print("Chrono rigid-body smoke test: PASS")
 finally:
     physics.disconnect(client)
