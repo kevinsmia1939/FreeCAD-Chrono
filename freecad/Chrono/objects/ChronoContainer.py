@@ -4,7 +4,7 @@ import FreeCAD
 class ChronoContainerFeature:
     def __init__(self, obj):
         obj.addProperty("App::PropertyLink", "World", "Container",
-                        "Physics World settings object")
+                        "Chrono System settings object")
         obj.addProperty("App::PropertyLink", "BodyTable", "Container",
                         "Rigid body summary table")
         obj.addProperty("App::PropertyLinkList", "RigidBodies", "Container",
@@ -173,7 +173,7 @@ def make_container(doc=None):
     # World inside container
     world = doc.addObject("App::FeaturePython", "ChronoWorld")
     ChronoWorldFeature(world)
-    world.Label = "Physics World"
+    world.Label = "Chrono System"
     container.World = world
 
     # Body summary table inside container

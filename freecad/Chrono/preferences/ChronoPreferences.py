@@ -33,15 +33,16 @@ def _body_color(preference_name, default):
 
 
 def get_body_color(body_type):
-    """Return the configured RGB color tuple for an active or passive body."""
+    """Return the configured RGB color tuple for a dynamic or fixed body."""
+    fixed = body_type in ("Fixed", "Passive")
     color = _body_color(
-        "PassiveBodyColor" if body_type == "Passive" else "ActiveBodyColor",
-        "#4f81bd" if body_type == "Passive" else "#d65f2b")
+        "PassiveBodyColor" if fixed else "ActiveBodyColor",
+        "#4f81bd" if fixed else "#d65f2b")
     return (color.redF(), color.greenF(), color.blueF())
 
 
 def apply_body_color(obj, body_type, refresh=False):
-    """Apply the configured active/passive color to a visible document object."""
+    """Apply the configured dynamic/fixed color to a visible document object."""
     if not FreeCAD.GuiUp or obj is None:
         return
     try:
@@ -189,11 +190,11 @@ class ChronoPreferencesPage:
 
         colors_group = QGroupBox("Body Colors")
         colors_layout = QVBoxLayout(colors_group)
-        self._active_color_button = QPushButton("Active body color")
+        self._active_color_button = QPushButton("Dynamic body color")
         self._active_color_button.clicked.connect(
             lambda: self._choose_color("_active_color", self._active_color_button))
         colors_layout.addWidget(self._active_color_button)
-        self._passive_color_button = QPushButton("Passive body color")
+        self._passive_color_button = QPushButton("Fixed body color")
         self._passive_color_button.clicked.connect(
             lambda: self._choose_color("_passive_color", self._passive_color_button))
         colors_layout.addWidget(self._passive_color_button)

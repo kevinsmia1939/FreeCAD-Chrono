@@ -37,8 +37,10 @@ _CONTACT_STEP_SECONDS_PER_MM = 2.0e-4
 
 
 class _Client:
-    def __init__(self, cpu_parallel=True):
-        self.system = chrono.ChSystemNSC()
+    def __init__(self, cpu_parallel=True, contact_model="NSC"):
+        self.contact_model = contact_model if contact_model == "SMC" else "NSC"
+        self.system = (chrono.ChSystemSMC() if self.contact_model == "SMC"
+                       else chrono.ChSystemNSC())
         collision_type = (
             chrono.ChCollisionSystem.Type_MULTICORE
             if cpu_parallel
@@ -262,11 +264,11 @@ def _add_shape_to_body(client, body, shape_id, material, is_static):
         body.AddCollisionShape(child, frame)
 
 
-def connect(_mode=DIRECT, cpuParallel=True):
+def connect(_mode=DIRECT, cpuParallel=True, contactModel="NSC"):
     global _next_client_id
     client_id = _next_client_id
     _next_client_id += 1
-    _clients[client_id] = _Client(cpuParallel)
+    _clients[client_id] = _Client(cpuParallel, contactModel)
     return client_id
 
 
@@ -343,7 +345,9 @@ def createMultiBody(baseMass, baseCollisionShapeIndex, basePosition,
     body.SetName(f"freecad-chrono:{body_id}")
     body.SetPos(_length_vec(basePosition))
     body.SetRot(_quat_xyzw(baseOrientation))
-    material = chrono.ChContactMaterialNSC()
+    material = (chrono.ChContactMaterialSMC()
+                if client.contact_model == "SMC"
+                else chrono.ChContactMaterialNSC())
     _add_shape_to_body(
         client, body, baseCollisionShapeIndex, material, mass <= 0.0)
     body.EnableCollision(True)
@@ -374,6 +378,24 @@ def changeDynamics(bodyUniqueId, _linkIndex, physicsClientId=0, **parameters):
         state.material.SetRestitution(float(parameters["restitution"]))
     if "lateralFriction" in parameters:
         state.material.SetFriction(float(parameters["lateralFriction"]))
+    for parameter, setter in (
+            ("staticFriction", "SetStaticFriction"),
+            ("slidingFriction", "SetSlidingFriction"),
+            ("rollingFriction", "SetRollingFriction"),
+            ("spinningFriction", "SetSpinningFriction"),
+            ("cohesion", "SetCohesion"),
+            ("contactDamping", "SetDampingF"),
+            ("normalCompliance", "SetCompliance"),
+            ("tangentialCompliance", "SetComplianceT"),
+            ("youngModulus", "SetYoungModulus"),
+            ("poissonRatio", "SetPoissonRatio"),
+            ("adhesion", "SetAdhesion"),
+            ("normalStiffness", "SetKn"),
+            ("tangentialStiffness", "SetKt"),
+            ("normalDamping", "SetGn"),
+            ("tangentialDamping", "SetGt")):
+        if parameter in parameters and hasattr(state.material, setter):
+            getattr(state.material, setter)(float(parameters[parameter]))
     if "collisionMargin" in parameters:
         requested = max(
             0.0, float(parameters["collisionMargin"]) * _LENGTH_SCALE)

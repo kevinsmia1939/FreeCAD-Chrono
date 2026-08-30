@@ -159,15 +159,16 @@ def getCapabilities():
     return dict(_capabilities_cache)
 
 
-def connect(mode=DIRECT, cpuParallel=True):
+def connect(mode=DIRECT, cpuParallel=True, contactModel="NSC"):
     global _next_remote_client
     if _native is not None:
-        return _native.connect(mode, cpuParallel=cpuParallel)
+        return _native.connect(mode, cpuParallel=cpuParallel, contactModel=contactModel)
     process, executable = _start_worker()
     temporary = _RemoteClient(process, None, executable)
     try:
         remote_id = temporary.call(
-            "connect", (mode,), {"cpuParallel": bool(cpuParallel)})
+            "connect", (mode,), {"cpuParallel": bool(cpuParallel),
+                                  "contactModel": contactModel})
     except Exception:
         temporary.close()
         raise

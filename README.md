@@ -8,13 +8,13 @@ A rigid-body physics simulation workbench for FreeCAD powered by [Project Chrono
 
 Video tutorial in screenshot/tutorial.mp4
 
-![Simulation overview — boxes and a sphere colliding mid-fall, Physics World properties visible in the Data tab](screenshot/overview.png)
+![Simulation overview — boxes and a sphere colliding mid-fall, Chrono System properties visible in the Data tab](screenshot/overview.png)
 
 ![Collision boundaries — green wireframes show each body's collision envelope](screenshot/collision%20boundary.png)
 
 ![Rigid Body Summary table — editable per-body properties with bulk-apply controls](screenshot/summary%20table.png)
 
-![Physics World Settings panel — gravity, damping, time step, solver, and mesh resolution](screenshot/world%20settings.png)
+![Chrono System Settings panel — gravity, damping, time step, solver, and mesh resolution](screenshot/world%20settings.png)
 
 ![Emitter object — emit rigid-body object](screenshot/emitter.png)
 
@@ -24,15 +24,16 @@ Video tutorial in screenshot/tutorial.mp4
 
 ## Features
 
-- **Active & Passive rigid bodies** — active bodies are driven by physics; passive bodies act as static colliders (floors, walls, ramps)
-- **Velocity Launcher** — Give bodies a velocity to throw at other active bodies
+- **Dynamic & Fixed rigid bodies** — dynamic bodies are integrated by Chrono; fixed bodies use `ChBody::SetFixed(true)` (floors, walls, ramps)
+- **Velocity Launcher** — Give dynamic bodies an initial velocity
 - **Original geometry is never modified** — the workbench drives `App::Link` clones, leaving your original solids untouched and fully editable at all times
 - **Automatic collision shape detection** — spheres, cylinders, and boxes get exact analytic collision shapes; any other solid is tessellated into a convex-hull or concave mesh automatically
 - **Animation timeline** — scrubber, transport controls (first / step back / play-pause / step forward / last), adjustable playback speed (0.1× – 8×), and loop toggle
 - **Simulation cache** — results are saved to disk alongside your `.FCStd` file so the timeline is available immediately on reopening the panel without re-running the simulation
 - **Rigid Body Summary table** — editable overview of all bodies (type, density, friction, mesh type, mesh resolution) with bulk-apply inputs for changing multiple bodies at once
 - **Bake frame as new origin** — commit any timeline frame back to the original objects as the new rest position; fully undoable with Ctrl+Z
-- **Physics World settings** — gravity magnitude and direction, simulation end time, frame time step, sub-steps (accuracy), solver iterations, and global mesh resolution, all stored in the document
+- **Chrono System settings** — gravity magnitude and direction, simulation end time, frame time step, integration substeps, maximum solver iterations, and global tessellation settings, all stored in the document
+- **Contact formulation and material** — select non-smooth contact (NSC, the default) or smooth penalty contact (SMC). Per-body and emitter material properties include static/sliding, rolling, and spinning friction; cohesion; NSC damping/compliance; and SMC elastic, adhesion, stiffness, and damping data.
 - **Recursive downgrade** — Break down array of solids into individual components, useful when setting up a simulation with many solids as rigid body using array and need to separate them.
 
 - **Emitter** — Emit multiple rigid-body objects in certain orientation or direction without manually duplicating rigid-body objects.
@@ -40,7 +41,7 @@ Video tutorial in screenshot/tutorial.mp4
 - **Destroy Rigid Body** — When touched, will be deleted/disabled. This can reduce unnecessary compute resources where rigid-body fell off the platform.
 - **Observers and conditional events** — non-physical regions report body entry/exit, body type, speed, AND/OR conditions, delays, emitter start/stop events, and simulation stop conditions.
 - **Setup-aware multicore execution** — the simulation panel inspects the configured geometry and installed Chrono version, then reports whether it can use multicore collision or must use a safe Bullet-collision fallback. Available Chrono/Eigen worker threads remain enabled in either mode.
-- **Analytics and settling controls** — stop when all active bodies settle, inspect speed data, and export the same cached animation/analytics data used by the original workflow.
+- **Analytics and settling controls** — stop when all dynamic bodies settle, inspect speed data, and export the same cached animation/analytics data used by the original workflow.
 ---
 
 ## Requirements
@@ -100,10 +101,10 @@ Restart FreeCAD and select **Chrono Physics** from the workbench dropdown. For t
 
 1. Open or create a FreeCAD document containing at least one solid.
 2. Switch to the **Chrono Physics** workbench.
-3. Click **Create Physics Container** — this adds a *Chrono Physics* folder to the model tree containing a *Physics World* settings object and a *Rigid Body Summary* table.
-4. Select a solid in the 3D view, then click **Add Active Body** (moves with physics) or **Add Passive Body** (static collider).
+3. Click **Create Physics Container** — this adds a *Chrono Physics* folder to the model tree containing a *Chrono System* settings object and a *Rigid Body Summary* table.
+4. Select a solid in the 3D view, then click **Add Dynamic Rigid Body** (integrated by Chrono) or **Add Fixed Rigid Body** (a `ChBody::SetFixed(true)` collider).
 5. Repeat step 4 for each solid you want to simulate.
-6. Adjust physics properties in the **Physics World** object (gravity, end time, time step, etc.) and per-body properties (density, friction, restitution) via the model tree or the Rigid Body Summary table.
+6. Adjust physics properties in the **Chrono System** object (gravity, end time, time step, etc.) and per-body properties (density, friction, restitution) via the model tree or the Rigid Body Summary table.
 7. Click **Run Simulation** in the toolbar to open the simulation panel.
 8. Click **Simulate** — a progress bar tracks the run. When it finishes the timeline slider is enabled.
 9. Drag the slider or press **Play** to watch the animation.
@@ -117,12 +118,12 @@ The **Enable CPU parallelization** option is setup-aware. The simulation panel s
 | Simulation setup | Collision mode | Threading used |
 |---|---|---|
 | Primitive collision shapes only (box, sphere, cylinder) | Chrono `MULTICORE` | Multicore collision plus Chrono/Eigen worker threads |
-| Passive concave mesh contacted only by spheres or boxes | Chrono `MULTICORE` | Chrono 10 has dedicated triangle–sphere and triangle–box contact paths; Chrono/Eigen threads are also enabled |
-| Passive concave mesh contacted by cylinders, capsules, convex hulls, or other custom active geometry | Chrono `BULLET` fallback | Chrono/Eigen worker threads remain enabled, but collision detection is not multicore |
+| Fixed concave mesh contacted only by spheres or boxes | Chrono `MULTICORE` | Chrono 10 has dedicated triangle–sphere and triangle–box contact paths; Chrono/Eigen threads are also enabled |
+| Fixed concave mesh contacted by cylinders, capsules, convex hulls, or other custom dynamic geometry | Chrono `BULLET` fallback | Chrono/Eigen worker threads remain enabled, but collision detection is not multicore |
 | PyChrono build without the `MULTICORE` collision type | Chrono `BULLET` fallback | Only the Chrono/Eigen threading exposed by that build |
 | CPU parallelization disabled | Chrono `BULLET` | No threading requested by the workbench |
 
-The cylinder/concave-mesh fallback is required by Chrono 10: its multicore narrow phase sends triangle–cylinder and similar pairs through a generic convex contact path which can falsely bridge real openings and cavities. The panel names the affected passive mesh and active geometry. The current openSUSE PyChrono 10.0.0 bindings also do not expose `ChSystemMulticoreNSC`; therefore “multicore” means multicore collision plus threaded Chrono/Eigen work, not a replacement of the complete NSC dynamics system.
+The cylinder/concave-mesh fallback is required by Chrono 10: its multicore narrow phase sends triangle–cylinder and similar pairs through a generic convex contact path which can falsely bridge real openings and cavities. The panel names the affected fixed mesh and dynamic geometry. The current openSUSE PyChrono 10.0.0 bindings also do not expose `ChSystemMulticoreNSC`; therefore “multicore” means multicore collision plus threaded Chrono/Eigen work, not a replacement of the complete NSC dynamics system.
 
 ## Current differences from the Bullet backend
 
@@ -131,7 +132,7 @@ These are limitations of the current PyChrono integration, rather than general l
 - PyChrono 10 does not expose the V-HACD helper bundled with PyBullet. A dynamic body explicitly set to a concave mesh therefore falls back to a single convex hull. Static concave triangle meshes remain exact.
 - Chrono 10's analytic cylinder/triangle contact is unstable for concave containers. Cylinder collision is represented by a 24-sided convex prism (under 1% radial error); the visible FreeCAD geometry, mass, and cylinder inertia remain unchanged.
 - The installed bindings do not expose `ChSystemMulticoreNSC`. Where the setup detector permits it, CPU parallelization uses Chrono's `MULTICORE` collision system and threaded Chrono/Eigen core, but the NSC dynamics system itself is not replaced by the separate multicore-system class.
-- PyBullet's per-body CCD controls do not have a direct equivalent in the bound Chrono API used here. Concave-mesh scenes therefore receive automatic, scale-aware internal collision substeps; the Physics World timestep and playback rate do not change.
+- PyBullet's per-body CCD controls do not have a direct equivalent in the bound Chrono API used here. Concave-mesh scenes therefore receive automatic, scale-aware internal collision substeps; the Chrono System timestep and playback rate do not change.
 - Query-only observer boundary checks use exact FreeCAD point-in-solid containment plus a conservative bounding-radius proximity test. PyBullet can provide an exact `getClosestPoints` query for two disabled-response collision objects.
 - Chrono requires an inertia tensor. Analytic boxes, spheres, and cylinders use their exact diagonal inertia; arbitrary meshes and compounds use a stable spherical estimate, which can produce somewhat different rotation from Bullet's inferred mesh inertia.
 - With the supplied AppImage, pipe-based bridging adds some overhead compared with an in-process PyChrono module. It does not change simulation results and disappears when both programs use the same Python ABI.

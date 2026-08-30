@@ -25,17 +25,13 @@ class BodyTablePanel:
     COL_NAME    = 0
     COL_TYPE    = 1
     COL_DENSITY = 2
-    COL_FRICT   = 3
-    COL_MESH    = 4
-    COL_RES     = 5
+    COL_MESH    = 3
 
     HEADERS = [
         "Name",
         "Type",
         "Density (kg/m³)",
-        "Friction",
         "Collision Shape",
-        "Mesh Resolution (mm)",
     ]
 
     _SHAPE_OPTIONS = ["Auto", "box", "sphere", "cylinder", "convex_hull", "mesh"]
@@ -82,8 +78,8 @@ class BodyTablePanel:
         # Type
         grid.addWidget(QtWidgets.QLabel("Type:"), 0, 0)
         self.inp_type = QtWidgets.QComboBox()
-        self.inp_type.addItems(["", "Active", "Passive"])
-        self.inp_type.setToolTip("Select Active or Passive, then click Apply")
+        self.inp_type.addItems(["", "Dynamic", "Fixed"])
+        self.inp_type.setToolTip("Select Dynamic or Fixed, then click Apply")
         grid.addWidget(self.inp_type, 0, 1)
         self.btn_apply_type = QtWidgets.QPushButton("Apply")
         grid.addWidget(self.btn_apply_type, 0, 2)
@@ -96,50 +92,25 @@ class BodyTablePanel:
         self.btn_apply_density = QtWidgets.QPushButton("Apply")
         grid.addWidget(self.btn_apply_density, 1, 2)
 
-        # Friction
-        grid.addWidget(QtWidgets.QLabel("Friction:"), 2, 0)
-        self.inp_friction = QtWidgets.QLineEdit()
-        self.inp_friction.setPlaceholderText("e.g. 0.5")
-        grid.addWidget(self.inp_friction, 2, 1)
-        self.btn_apply_friction = QtWidgets.QPushButton("Apply")
-        grid.addWidget(self.btn_apply_friction, 2, 2)
-
         # Collision Shape override
-        grid.addWidget(QtWidgets.QLabel("Collision Shape:"), 3, 0)
+        grid.addWidget(QtWidgets.QLabel("Collision Shape:"), 2, 0)
         self.inp_shape = QtWidgets.QComboBox()
         self.inp_shape.addItems([""] + self._SHAPE_OPTIONS)
         self.inp_shape.setToolTip(
             "Override the collision shape type for the selected rows.\n"
             "'Auto' restores automatic detection from geometry.")
-        grid.addWidget(self.inp_shape, 3, 1)
+        grid.addWidget(self.inp_shape, 2, 1)
         self.btn_apply_shape = QtWidgets.QPushButton("Apply")
-        grid.addWidget(self.btn_apply_shape, 3, 2)
-
-        # Mesh Resolution
-        grid.addWidget(QtWidgets.QLabel("Mesh Resolution (mm):"), 4, 0)
-        self.inp_meshres = QtWidgets.QLineEdit()
-        self.inp_meshres.setPlaceholderText("e.g. 0.5   (0 = world default)")
-        self.inp_meshres.setToolTip(
-            "Only applies to rows whose effective Collision Shape is 'mesh'.\n"
-            "Set to 0 to use the Physics World default.")
-        grid.addWidget(self.inp_meshres, 4, 1)
-        self.btn_apply_meshres = QtWidgets.QPushButton("Apply")
-        self.btn_apply_meshres.setEnabled(False)
-        self.btn_apply_meshres.setToolTip(
-            "Enabled when at least one selected row uses a tessellated mesh shape.")
-        grid.addWidget(self.btn_apply_meshres, 4, 2)
+        grid.addWidget(self.btn_apply_shape, 2, 2)
 
         layout.addWidget(apply_group)
 
         # ── Wiring ─────────────────────────────────────────────────────────
         refresh_btn.clicked.connect(self._populate)
         self.table.itemChanged.connect(self._on_item_changed)
-        self.table.itemSelectionChanged.connect(self._on_selection_changed)
         self.btn_apply_type.clicked.connect(self._apply_type)
         self.btn_apply_density.clicked.connect(self._apply_density)
-        self.btn_apply_friction.clicked.connect(self._apply_friction)
         self.btn_apply_shape.clicked.connect(self._apply_shape)
-        self.btn_apply_meshres.clicked.connect(self._apply_meshres)
 
         self._populate()
 
@@ -150,13 +121,8 @@ class BodyTablePanel:
 
         from ..simulation.ChronoSimulation import (
             collect_rigid_bodies, _detect_freecad_shape_type)
-        from .ChronoWorld import find_world
-
         self._updating = True
         try:
-            world     = find_world()
-            world_res = getattr(world, "MeshResolution", 1.0) if world else 1.0
-
             # Show disabled bodies too so they can be re-enabled in the
             # Property editor without disappearing from this management table.
             self._rb_list = collect_rigid_bodies(enabled_only=False)
@@ -174,13 +140,6 @@ class BodyTablePanel:
                 override = getattr(rb, "ShapeOverride", "Auto")
                 effective = detected if override == "Auto" else override
 
-                body_res = getattr(rb, "MeshResolution", 0.0)
-                if effective in ("mesh", "convex_hull"):
-                    res_text = (f"{body_res:.3f}" if body_res > 0
-                                else f"{world_res:.3f} (world)")
-                else:
-                    res_text = "N/A"
-
                 density = getattr(rb, "Density", 1000.0)
 
                 def _ro(text):
@@ -196,8 +155,6 @@ class BodyTablePanel:
                 self.table.setItem(row, self.COL_NAME,    _ro(rb.OriginalObject.Label))
                 self.table.setItem(row, self.COL_TYPE,    _ro(rb.BodyType))
                 self.table.setItem(row, self.COL_DENSITY, _ed(f"{density:.2f}"))
-                self.table.setItem(row, self.COL_FRICT,   _ed(f"{rb.Friction:.4f}"))
-                self.table.setItem(row, self.COL_RES,     _ro(res_text))
 
                 # Collision shape combo — one per row
                 # Each item stores the ShapeOverride value as item data so the
@@ -239,28 +196,6 @@ class BodyTablePanel:
         except Exception:
             return "mesh"
 
-    def _update_res_cell(self, row):
-        """Refresh the resolution cell text after a shape type change."""
-        from PySide import QtCore, QtWidgets
-
-        from .ChronoWorld import find_world
-
-        world     = find_world()
-        world_res = getattr(world, "MeshResolution", 1.0) if world else 1.0
-
-        effective = self._effective_mesh_type(row)
-        if effective == "mesh":
-            rb = self._rb_list[row]
-            body_res = getattr(rb, "MeshResolution", 0.0)
-            res_text = (f"{body_res:.3f}" if body_res > 0
-                        else f"{world_res:.3f} (world)")
-        else:
-            res_text = "N/A"
-
-        it = self.table.item(row, self.COL_RES)
-        if it:
-            it.setText(res_text)
-
     # ── Selection ───────────────────────────────────────────────────────────
 
     def _selected_rows(self):
@@ -269,11 +204,6 @@ class BodyTablePanel:
     def _recompute_document(self):
         if self._rb_list and self._rb_list[0].Document is not None:
             self._rb_list[0].Document.recompute()
-
-    def _on_selection_changed(self):
-        rows = self._selected_rows()
-        any_mesh = any(self._effective_mesh_type(r) == "mesh" for r in rows)
-        self.btn_apply_meshres.setEnabled(any_mesh)
 
     # ── Inline cell / combo edits ────────────────────────────────────────────
 
@@ -288,8 +218,6 @@ class BodyTablePanel:
         try:
             if col == self.COL_DENSITY:
                 rb.Density = max(0.0, float(item.text()))
-            elif col == self.COL_FRICT:
-                rb.Friction = max(0.0, float(item.text()))
         except ValueError:
             pass
         else:
@@ -305,8 +233,6 @@ class BodyTablePanel:
             rb.ShapeOverride = actual
         except Exception:
             pass
-        self._update_res_cell(row)
-        self._on_selection_changed()
         self._recompute_document()
 
     # ── Bulk apply ──────────────────────────────────────────────────────────
@@ -344,23 +270,6 @@ class BodyTablePanel:
             self._updating = False
         self._recompute_document()
 
-    def _apply_friction(self):
-        try:
-            val = max(0.0, float(self.inp_friction.text()))
-        except ValueError:
-            return
-        self._updating = True
-        try:
-            for row in self._selected_rows():
-                rb = self._rb_list[row]
-                rb.Friction = val
-                it = self.table.item(row, self.COL_FRICT)
-                if it:
-                    it.setText(f"{val:.4f}")
-        finally:
-            self._updating = False
-        self._recompute_document()
-
     def _apply_shape(self):
         val = self.inp_shape.currentText()
         if not val:
@@ -379,32 +288,6 @@ class BodyTablePanel:
                         if combo.itemData(i) == val:
                             combo.setCurrentIndex(i)
                             break
-                self._update_res_cell(row)
-        finally:
-            self._updating = False
-        self._on_selection_changed()
-        self._recompute_document()
-
-    def _apply_meshres(self):
-        try:
-            val = max(0.0, float(self.inp_meshres.text()))
-        except ValueError:
-            return
-        from .ChronoWorld import find_world
-        world     = find_world()
-        world_res = getattr(world, "MeshResolution", 1.0) if world else 1.0
-
-        self._updating = True
-        try:
-            for row in self._selected_rows():
-                if self._effective_mesh_type(row) != "mesh":
-                    continue
-                rb = self._rb_list[row]
-                rb.MeshResolution = val
-                res_text = f"{val:.3f}" if val > 0 else f"{world_res:.3f} (world)"
-                it = self.table.item(row, self.COL_RES)
-                if it:
-                    it.setText(res_text)
         finally:
             self._updating = False
         self._recompute_document()

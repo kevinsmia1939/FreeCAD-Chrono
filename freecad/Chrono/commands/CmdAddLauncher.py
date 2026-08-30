@@ -15,12 +15,12 @@ def _icons_path():
 
 
 def _selected_active_rigid_bodies():
-    """Return selected enabled RigidBody objects whose BodyType is Active."""
+    """Return selected enabled RigidBody objects whose BodyType is Dynamic."""
     result = []
     for obj in FreeCADGui.Selection.getSelection():
         if (hasattr(obj, "Proxy")
                 and type(obj.Proxy).__name__ == "RigidBodyFeature"
-                and getattr(obj, "BodyType", None) == "Active"
+                and getattr(obj, "BodyType", None) in ("Dynamic", "Active")
                 and getattr(obj, "Enabled", True)):
             result.append(obj)
     return result
@@ -33,10 +33,10 @@ class AddLauncherCommand:
             "Pixmap": os.path.join(_icons_path(), "ChronoLauncher.svg"),
             "MenuText": "Add Velocity Launcher",
             "ToolTip": (
-                "Add a Velocity Launcher to the selected active rigid body.\n"
+                "Add a Velocity Launcher to the selected dynamic rigid body.\n"
                 "The body stays frozen until LaunchTime, then receives an\n"
                 "instantaneous velocity impulse and behaves normally afterwards.\n\n"
-                "Select an Active Rigid Body in the tree first."
+                "Select a Dynamic Rigid Body in the tree first."
             ),
         }
 
@@ -52,8 +52,8 @@ class AddLauncherCommand:
         if not rbs:
             QMessageBox.warning(
                 None,
-                "No Active Rigid Body Selected",
-                "Select one or more Active Rigid Body objects in the tree view,\n"
+                "No Dynamic Rigid Body Selected",
+                "Select one or more Dynamic Rigid Body objects in the tree view,\n"
                 "then run Add Velocity Launcher.",
             )
             return

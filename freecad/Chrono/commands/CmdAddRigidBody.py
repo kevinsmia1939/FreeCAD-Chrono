@@ -36,14 +36,14 @@ def _require_container():
     return c
 
 
-class AddActiveBodyCommand:
+class AddDynamicBodyCommand:
     def GetResources(self):
         import os
         return {
             "Pixmap": os.path.join(_icons_path(), "AddActiveBody.svg"),
-            "MenuText": "Add Active Rigid Body",
+            "MenuText": "Add Dynamic Rigid Body",
             "ToolTip": (
-                "Mark the selected solid as an active rigid body.\n"
+                "Create a dynamic Chrono ChBody from the selected solid.\n"
                 "An App::Link clone is created inside the container;\n"
                 "the original solid is not modified."
             ),
@@ -60,20 +60,20 @@ class AddActiveBodyCommand:
         sel = [o for o in FreeCADGui.Selection.getSelection() if _has_shape(o)]
         if not sel:
             return
-        FreeCAD.ActiveDocument.openTransaction("Add Active Rigid Body")
+        FreeCAD.ActiveDocument.openTransaction("Add Dynamic Rigid Body")
         for obj in sel:
-            make_rigid_body(obj, "Active", container=container)
+            make_rigid_body(obj, "Dynamic", container=container)
         FreeCAD.ActiveDocument.commitTransaction()
 
 
-class AddPassiveBodyCommand:
+class AddFixedBodyCommand:
     def GetResources(self):
         import os
         return {
             "Pixmap": os.path.join(_icons_path(), "AddPassiveBody.svg"),
-            "MenuText": "Add Passive Rigid Body",
+            "MenuText": "Add Fixed Rigid Body",
             "ToolTip": (
-                "Mark the selected solid as a passive (static) rigid body.\n"
+                "Create a fixed Chrono ChBody from the selected solid.\n"
                 "An App::Link clone is created inside the container;\n"
                 "the original solid is not modified."
             ),
@@ -90,11 +90,11 @@ class AddPassiveBodyCommand:
         sel = [o for o in FreeCADGui.Selection.getSelection() if _has_shape(o)]
         if not sel:
             return
-        FreeCAD.ActiveDocument.openTransaction("Add Passive Rigid Body")
+        FreeCAD.ActiveDocument.openTransaction("Add Fixed Rigid Body")
         for obj in sel:
-            make_rigid_body(obj, "Passive", container=container)
+            make_rigid_body(obj, "Fixed", container=container)
         FreeCAD.ActiveDocument.commitTransaction()
 
 
-FreeCADGui.addCommand("Chrono_AddActiveBody", AddActiveBodyCommand())
-FreeCADGui.addCommand("Chrono_AddPassiveBody", AddPassiveBodyCommand())
+FreeCADGui.addCommand("Chrono_AddActiveBody", AddDynamicBodyCommand())
+FreeCADGui.addCommand("Chrono_AddPassiveBody", AddFixedBodyCommand())

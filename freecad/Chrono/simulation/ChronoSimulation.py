@@ -1,4 +1,5 @@
 import FreeCAD
+import re
 import math
 import random
 import time
@@ -8,6 +9,36 @@ M_TO_MM = 1000.0
 _last_stop_reason = ""
 _last_compute_time_seconds = 0.0
 _playback_body_types = {}
+
+
+def _is_fixed_body_type(body_type):
+    """Accept legacy Passive values while using Chrono's Fixed terminology."""
+    return body_type in ("Fixed", "Passive")
+
+
+def _is_dynamic_body_type(body_type):
+    return not _is_fixed_body_type(body_type)
+
+
+def _contact_material_parameters(obj):
+    """Translate FreeCAD material fields to the Chrono adapter API."""
+    return {
+        "staticFriction": max(0.0, getattr(obj, "StaticFriction", 0.5)),
+        "slidingFriction": max(0.0, getattr(obj, "SlidingFriction", 0.5)),
+        "rollingFriction": max(0.0, getattr(obj, "RollingFriction", 0.0)),
+        "spinningFriction": max(0.0, getattr(obj, "SpinningFriction", 0.0)),
+        "cohesion": max(0.0, getattr(obj, "Cohesion", 0.0)),
+        "contactDamping": max(0.0, getattr(obj, "ContactDamping", 0.0)),
+        "normalCompliance": max(0.0, getattr(obj, "NormalCompliance", 0.0)),
+        "tangentialCompliance": max(0.0, getattr(obj, "TangentialCompliance", 0.0)),
+        "youngModulus": max(0.0, getattr(obj, "YoungModulus", 2.0e7)),
+        "poissonRatio": max(0.0, min(0.499, getattr(obj, "PoissonRatio", 0.3))),
+        "adhesion": max(0.0, getattr(obj, "Adhesion", 0.0)),
+        "normalStiffness": max(0.0, getattr(obj, "NormalStiffness", 0.0)),
+        "tangentialStiffness": max(0.0, getattr(obj, "TangentialStiffness", 0.0)),
+        "normalDamping": max(0.0, getattr(obj, "NormalDamping", 0.0)),
+        "tangentialDamping": max(0.0, getattr(obj, "TangentialDamping", 0.0)),
+    }
 
 
 class SimulationFrame(dict):
@@ -341,7 +372,7 @@ def apply_frame(frame, doc=None):
         if link.Name not in frame:
             link.ViewObject.Visibility = False
             continue
-        body_type = "Passive" if link.Name in passive_link_names else "Active"
+        body_type = "Fixed" if link.Name in passive_link_names else "Dynamic"
         playback_key = (doc.Name, link.Name)
         if _playback_body_types.get(playback_key) != body_type:
             apply_body_color(link, body_type)
@@ -407,7 +438,7 @@ def _configured_shape_type(shape, override="Auto", is_static=False):
     return detected
 
 
-def multithreading_support(cpu_parallel=True, capabilities=None):
+def multithreading_support(cpu_parallel=True, capabilities=None, contact_model="NSC"):
     """Describe the exact threading/collision mode supported by this document.
 
     The returned dictionary is intentionally UI-neutral so the task panel and
@@ -437,7 +468,7 @@ def multithreading_support(cpu_parallel=True, capabilities=None):
     }
     if not cpu_parallel:
         return dict(base, level="off", collision_backend="BULLET",
-                    summary="Disabled by Physics World setting",
+                    summary="Disabled by Chrono System setting",
                     detail="Enable CPU parallelization to use available threads.")
 
     if not capabilities.get("multicore_collision_available", False):
@@ -460,13 +491,13 @@ def multithreading_support(cpu_parallel=True, capabilities=None):
             continue
         override = getattr(rb, "ShapeOverride", "Auto")
         kind = _configured_shape_type(
-            original.Shape, override, rb.BodyType == "Passive")
-        if rb.BodyType == "Passive" and kind == "mesh":
+            original.Shape, override, _is_fixed_body_type(rb.BodyType))
+        if _is_fixed_body_type(rb.BodyType) and kind == "mesh":
             static_meshes.append(rb.Label)
-        elif rb.BodyType == "Active":
+        elif _is_dynamic_body_type(rb.BodyType):
             dynamic_types.setdefault(kind, []).append(rb.Label)
     for emitter in emitters:
-        if emitter.BodyType != "Active":
+        if not _is_dynamic_body_type(emitter.BodyType):
             continue
         for template, _ratio in emitter_template_entries(emitter):
             kind = _configured_shape_type(template.Shape)
@@ -482,8 +513,8 @@ def multithreading_support(cpu_parallel=True, capabilities=None):
         detail = (
             f"Chrono {version} multicore collision has no reliable dedicated "
             f"triangle contact path for {', '.join(unsupported)} geometry. "
-            f"Passive concave mesh: {', '.join(static_meshes)}. "
-            f"Affected active geometry: {geometry}. Bullet collision is selected "
+            f"Fixed concave mesh: {', '.join(static_meshes)}. "
+            f"Affected dynamic geometry: {geometry}. Bullet collision is selected "
             "to preserve openings and cavities; Chrono/Eigen worker threads remain enabled."
         )
         return dict(base, level="partial", collision_backend="BULLET",
@@ -493,7 +524,8 @@ def multithreading_support(cpu_parallel=True, capabilities=None):
     nsc_note = (" The installed PyChrono binding does not expose "
                 "ChSystemMulticoreNSC, so the NSC dynamics system itself remains "
                 "the standard ChSystemNSC."
-                if not base["multicore_nsc_system_available"] else "")
+                if contact_model == "NSC"
+                and not base["multicore_nsc_system_available"] else "")
     return dict(
         base,
         level="supported",
@@ -631,7 +663,7 @@ def _tessellate_to_local(fc_shape, orig_pl, world_center, precision,
     Body-local space is centred at world_center (the bbox centre) and has the
     same orientation as orig_pl.  Coordinates are in metres.
 
-    *precision* is the maximum chord deviation in mm (from MeshResolution).
+    *precision* is the global Chrono System chord deviation in mm.
     """
     if source_mesh is not None:
         verts_world, tri_faces = source_mesh.Topology
@@ -819,7 +851,7 @@ def get_last_compute_time_seconds():
 
 
 def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
-                   stop_body_type="Active", cpu_parallel=None):
+                   stop_body_type="Dynamic", cpu_parallel=None):
     """
     Run the Project Chrono simulation using settings from the ChronoWorld object.
 
@@ -858,7 +890,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
     if not rigid_bodies and not emitters:
         FreeCAD.Console.PrintWarning(
             "Chrono: No enabled rigid bodies or emitters found.\n"
-            "Add Active/Passive rigid bodies or configure an emitter first.\n"
+            "Add Dynamic/Fixed rigid bodies or configure an emitter first.\n"
         )
         return None
     ratio_error = _emitter_template_ratio_error(emitters)
@@ -897,6 +929,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         end_time         = max(0.001, getattr(world, "EndTime", 10.0))
         time_step        = world.TimeStep
         solver_iters     = world.SolverIterations
+        contact_model    = getattr(world, "ContactModel", "NSC")
         sub_steps        = max(1, getattr(world, "SubSteps", 4))
         mesh_resolution  = 1.0
         collision_margin = max(0.0, getattr(world, "CollisionMargin", 0.001))
@@ -912,6 +945,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         end_time         = 10.0
         time_step        = 1.0 / 60.0
         solver_iters     = 10
+        contact_model    = "NSC"
         sub_steps        = 4
         mesh_resolution  = 1.0
         collision_margin = 0.001
@@ -947,7 +981,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         f"frame={time_step*1000:.3f} ms, "
         f"subSteps={sub_steps}, tick={chrono_tick*1000:.3f} ms, "
         f"gravity=({gx:.3f}, {gy:.3f}, {gz:.3f}) m/s², "
-        f"solverIterations={solver_iters}, "
+        f"contactModel={contact_model}, solverIterations={solver_iters}, "
         f"linearDamping={linear_damping:.3f}, angularDamping={angular_damping:.3f}\n"
     )
 
@@ -955,14 +989,20 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         cpu_parallel = getattr(world, "EnableCPUParallel", True)
 
     threading = multithreading_support(
-        cpu_parallel=bool(cpu_parallel), capabilities=p.getCapabilities())
+        cpu_parallel=bool(cpu_parallel), capabilities=p.getCapabilities(),
+        contact_model=contact_model)
     collision_parallel = threading["collision_backend"] == "MULTICORE"
     if cpu_parallel and threading["level"] == "partial":
-        FreeCAD.Console.PrintWarning(
-            f"Chrono: {threading['summary']}. {threading['detail']}\n")
+        # This is an informational capability report, not a simulation
+        # failure.  Keep it in FreeCAD's Report View instead of presenting a
+        # modal warning to the user.
+        FreeCAD.Console.PrintMessage(
+            f"Chrono CPU threading: {threading['summary']}. "
+            f"{threading['detail']}\n")
 
     try:
-        client = p.connect(p.DIRECT, cpuParallel=collision_parallel)
+        client = p.connect(p.DIRECT, cpuParallel=collision_parallel,
+                           contactModel=contact_model)
     except Exception as exc:
         FreeCAD.Console.PrintError(f"Chrono: unable to start PyChrono: {exc}\n")
         _show_install_error(str(exc))
@@ -1001,6 +1041,9 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
 
     # {chrono_id: (body_config_obj, link_obj, local_offset_mm, is_emitted)}
     body_map = {}
+    # Simulation-time at which each body was created. Regular bodies begin at
+    # zero; emitted particles begin at their actual materialization time.
+    body_birth_times = {}
     # Conservative bounding radii (metres) used to prevent an emitter from
     # creating two initially overlapping Chrono bodies.
     body_characteristic_radii = {}
@@ -1089,7 +1132,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
 
     def condition_body_type(obj, name):
         property_prefix = "Stop" if name == "End" else name
-        return getattr(obj, f"{property_prefix}ConditionBodyType", "Active")
+        return getattr(obj, f"{property_prefix}ConditionBodyType", "Dynamic")
 
     for emitter in emitters:
         for condition_type, source in (
@@ -1170,7 +1213,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             random.Random(direction_seed if direction_seed else None),
         )
         configs = {}
-        is_static = emitter.BodyType == "Passive"
+        is_static = _is_fixed_body_type(emitter.BodyType)
         density = max(0.0, getattr(emitter, "Density", 1000.0))
         for template, _ratio in emitter_template_entries(emitter):
             template_shape = template.Shape
@@ -1190,7 +1233,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             configs[template.Name] = (
                 col, characteristic_radius, mass, local_offset,
                 max(0.0, getattr(emitter, "Restitution", 0.3)),
-                max(0.0, getattr(emitter, "Friction", 0.5)),
+                max(0.0, getattr(emitter, "SlidingFriction", 0.5)),
             )
         emitter_configs[emitter.Name] = configs
 
@@ -1201,17 +1244,19 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
     def schedule_emitter(emitter, base_step):
         """Store an emitter's schedule without allocating future particles."""
         start = max(0.0, getattr(emitter, "StartTime", 0.0))
-        end = max(0.0, getattr(emitter, "EndTime", 0.0))
         start_step = base_step + max(0, int(round(start / time_step)))
         last_step = max(0, steps - 1)
-        # An end time of zero is an open emission window.  Its configured
-        # count is distributed through the remaining simulation frames; only
-        # simulation completion or an end collision can stop it earlier.
-        if end <= 0.0:
-            end_step = last_step
-        else:
+        end_type = emitter_condition_type(
+            emitter, "End", getattr(emitter, "StopConditionObject", None))
+        # Only the explicit Time trigger uses EndTime. None and the two event
+        # triggers keep emitting until the simulation ends (or an event stops
+        # them), so their configured particles span the remaining frames.
+        if end_type == "Time":
+            end = max(start, max(0.0, getattr(emitter, "EndTime", 0.0)))
             end = max(start, end)
             end_step = base_step + max(0, int(round(end / time_step)))
+        else:
+            end_step = last_step
         end_step = max(start_step, min(last_step, end_step))
         if getattr(emitter, "UseParticlesPerSecond", False):
             rate = max(0.001, getattr(emitter, "ParticlesPerSecond", 1.0))
@@ -1251,6 +1296,12 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         for schedule in emitter_schedules.values():
             emitter = schedule["emitter"]
             if emitter.Name in stopped_emitters:
+                continue
+            # A Time stop is strict: do not keep retrying a particle that was
+            # delayed because the emission source was occupied after its
+            # emission window has closed.
+            if step > schedule["end_step"]:
+                schedule["next_index"] = schedule["count"]
                 continue
             while schedule["next_index"] < schedule["count"]:
                 index = schedule["next_index"]
@@ -1332,6 +1383,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             restitution=restitution,
             lateralFriction=friction,
             collisionMargin=collision_margin,
+            **_contact_material_parameters(emitter),
             physicsClientId=client,
         )
         if mass > 0:
@@ -1359,6 +1411,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         if FreeCAD.GuiUp:
             link.ViewObject.Visibility = True
         body_map[body_id] = (emitter, link, local_offset, True)
+        body_birth_times[body_id] = emission_time
         body_characteristic_radii[body_id] = characteristic_radius
         become_passive_after = max(
             0.0, getattr(emitter, "BecomePassiveAfter", 0.0))
@@ -1371,27 +1424,63 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
     def body_is_active(body_id, entry):
         """Return whether a body currently participates as an active body."""
         return (entry is not None
-                and entry[0].BodyType == "Active"
+                and _is_dynamic_body_type(entry[0].BodyType)
                 and body_id not in passivated_body_ids)
 
     def body_matches_type(body_id, entry, required_type):
         if entry is None:
             return False
+        if required_type == "Active":
+            required_type = "Dynamic"
+        elif required_type == "Passive":
+            required_type = "Fixed"
         if required_type == "Any":
             return True
-        current_type = "Active" if body_is_active(body_id, entry) else "Passive"
+        current_type = "Dynamic" if body_is_active(body_id, entry) else "Fixed"
         return current_type == required_type
 
-    def observer_body_details(body_id, entry):
-        """Return the user-facing type and linear speed for one Chrono body."""
+    def observer_body_details(body_id, entry, current_time):
+        """Return type, linear speed, and simulation/emission age for one body."""
         linear, _angular = p.getBaseVelocity(body_id, physicsClientId=client)
         speed = sum(value * value for value in linear) ** 0.5
-        body_type = "Active" if body_is_active(body_id, entry) else "Passive"
-        return body_type, speed
+        body_type = "Dynamic" if body_is_active(body_id, entry) else "Fixed"
+        lifetime = max(0.0, current_time - body_birth_times.get(body_id, 0.0))
+        return body_type, speed, lifetime
 
-    def observer_condition_matches(observer, body_type, speed):
-        """Evaluate the observer-owned body-type and speed rules."""
+    invalid_observer_regexes = set()
+
+    def observer_condition_matches(observer, entry, body_type, speed, lifetime):
+        """Evaluate the observer-owned name, type, speed, and lifetime rules."""
+        name_mode = getattr(observer, "NameCondition", "Any")
+        name_pattern = getattr(observer, "NamePattern", "").strip()
+        name_enabled = name_mode != "Any" and bool(name_pattern)
+        # A rigid-body configuration and its simulation App::Link both have
+        # useful names. Match either Name or Label so the filter remains
+        # usable for normal bodies as well as uniquely named emitted links.
+        names = tuple(str(getattr(obj, attribute, ""))
+                      for obj in entry[:2]
+                      for attribute in ("Name", "Label"))
+        if name_mode == "Exact":
+            name_match = name_pattern in names
+        elif name_mode == "Regular expression":
+            try:
+                name_match = any(re.search(name_pattern, name) for name in names)
+            except re.error as exc:
+                key = (observer.Name, name_pattern)
+                if key not in invalid_observer_regexes:
+                    invalid_observer_regexes.add(key)
+                    FreeCAD.Console.PrintWarning(
+                        "Chrono: observer '{}' has an invalid name regular "
+                        "expression '{}': {}\n".format(
+                            observer.Label, name_pattern, exc))
+                name_match = False
+        else:
+            name_match = True
         required_type = getattr(observer, "BodyTypeCondition", "Any")
+        if required_type == "Active":
+            required_type = "Dynamic"
+        elif required_type == "Passive":
+            required_type = "Fixed"
         speed_mode = getattr(observer, "SpeedCondition", "Any")
         type_enabled = required_type != "Any"
         speed_enabled = speed_mode != "Any"
@@ -1399,11 +1488,24 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         threshold = max(0.0, getattr(observer, "Speed", 0.0))
         speed_match = (speed >= threshold if speed_mode == "At least"
                        else speed <= threshold)
+        lifetime_mode = getattr(observer, "LifetimeCondition", "Any")
+        lifetime_minimum = max(0.0, getattr(observer, "Lifetime", 0.0))
+        lifetime_maximum = max(lifetime_minimum, getattr(
+            observer, "LifetimeMaximum", lifetime_minimum))
+        lifetime_match = (
+            lifetime > lifetime_minimum if lifetime_mode == "Greater than"
+            else lifetime < lifetime_minimum if lifetime_mode == "Less than"
+            else lifetime_minimum <= lifetime <= lifetime_maximum
+            if lifetime_mode == "Between" else True)
         enabled_matches = []
+        if name_enabled:
+            enabled_matches.append(name_match)
         if type_enabled:
             enabled_matches.append(type_match)
         if speed_enabled:
             enabled_matches.append(speed_match)
+        if lifetime_mode != "Any":
+            enabled_matches.append(lifetime_match)
         if not enabled_matches:
             return True
         if getattr(observer, "ConditionLogic", "AND") == "OR":
@@ -1440,12 +1542,14 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             for body_id, entry in body_map.items():
                 if not body_touches_observer(observer_id, observer, body_id):
                     continue
-                body_type, speed = observer_body_details(body_id, entry)
+                body_type, speed, lifetime = observer_body_details(
+                    body_id, entry, current_time)
                 current[body_id] = body_type
-                if observer_condition_matches(observer, body_type, speed):
-                    matching[body_id] = (entry, body_type, speed)
-                details.append("{}: {} ({:.6g} m/s)".format(
-                    entry[1].Label, body_type, speed))
+                if observer_condition_matches(
+                        observer, entry, body_type, speed, lifetime):
+                    matching[body_id] = (entry, body_type, speed, lifetime)
+                details.append("{}: {} ({:.6g} m/s, age {:.6g} s)".format(
+                    entry[1].Label, body_type, speed, lifetime))
                 if body_id not in previous:
                     message = ("observer '{}' frame {} (t={:.6f} s): '{}' entered "
                                "as {} at {:.6g} m/s".format(
@@ -1478,7 +1582,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             for body_id in list(started_at):
                 if body_id not in matching:
                     del started_at[body_id]
-            for body_id, (entry, body_type, speed) in matching.items():
+            for body_id, (entry, body_type, speed, lifetime) in matching.items():
                 started_at.setdefault(body_id, current_time)
                 if (not observer.Triggered
                         and current_time - started_at[body_id]
@@ -1487,9 +1591,9 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                     observer.TriggerBody = entry[1].Label
                     observer.TriggerTime = current_time
                     message = ("observer '{}' triggered at frame {} (t={:.6f} s): "
-                               "'{}' matched as {} at {:.6g} m/s".format(
+                               "'{}' matched as {} at {:.6g} m/s, age {:.6g} s".format(
                                    observer.Label, frame_number, current_time,
-                                   entry[1].Label, body_type, speed))
+                                   entry[1].Label, body_type, speed, lifetime))
                     observer.LastEvent = message
                     FreeCAD.Console.PrintMessage("Chrono: {}\n".format(message))
 
@@ -1513,7 +1617,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                 angularVelocity=[0.0, 0.0, 0.0], physicsClientId=client)
             passivated_body_ids.add(body_id)
             from ..preferences.ChronoPreferences import apply_body_color
-            apply_body_color(entry[1], "Passive", refresh=True)
+            apply_body_color(entry[1], "Fixed", refresh=True)
             FreeCAD.Console.PrintMessage(
                 f"Chrono: emitted particle '{entry[1].Label}' became "
                 f"passive at frame {frame_number} (t={current_time:.6f} s).\n")
@@ -1646,7 +1750,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                         world_center.y * MM_TO_M,
                         world_center.z * MM_TO_M]
 
-            is_static = (rb.BodyType == "Passive")
+            is_static = _is_fixed_body_type(rb.BodyType)
             effective_res = mesh_resolution
             override = getattr(rb, "ShapeOverride", "Auto")
             forced_type = None if override == "Auto" else override
@@ -1657,7 +1761,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                 source_mesh=_generated_mesh_for_source(mesh_settings, original))
 
             rot_q = orig_pl.Rotation.Q      # (x, y, z, w)
-            if rb.BodyType == "Active":
+            if _is_dynamic_body_type(rb.BodyType):
                 density    = getattr(rb, "Density", 1000.0)
                 volume_m3  = shape.Volume * 1e-9   # mm³ → m³
                 mass       = density * volume_m3
@@ -1674,8 +1778,9 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             p.changeDynamics(
                 body_id, -1,
                 restitution=rb.Restitution,
-                lateralFriction=rb.Friction,
+                lateralFriction=max(0.0, getattr(rb, "SlidingFriction", 0.5)),
                 collisionMargin=collision_margin,
+                **_contact_material_parameters(rb),
                 physicsClientId=client,
             )
 
@@ -1721,6 +1826,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                 world_center - orig_pl.Base)
 
             body_map[body_id] = (rb, link, local_offset, False)
+            body_birth_times[body_id] = 0.0
             if mass > 0.0:
                 body_characteristic_radii[body_id] = characteristic_radius
 
@@ -1731,7 +1837,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         initial_speeds = {}
         for body_id, (rb, link, _, _) in body_map.items():
             initial_frame[link.Name] = link.Placement.copy()
-            if rb.BodyType == "Active":
+            if _is_dynamic_body_type(rb.BodyType):
                 linear, _angular = p.getBaseVelocity(
                     body_id, physicsClientId=client)
                 initial_speeds[link.Name] = sum(value * value for value in linear) ** 0.5
@@ -1825,7 +1931,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             frame = SimulationFrame()
             speed_frame = {}
             for body_id, (rb, link, local_offset, is_emitted) in body_map.items():
-                if rb.BodyType == "Passive":
+                if _is_fixed_body_type(rb.BodyType):
                     frame[link.Name] = link.Placement.copy()
                     speed_frame[link.Name] = 0.0
                     continue

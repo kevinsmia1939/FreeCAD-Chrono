@@ -3,6 +3,7 @@ import FreeCAD
 import FreeCADGui
 
 from PySide import QtCore, QtWidgets
+from ..GuiUtils import collapsible_section
 
 
 def _mod_path():
@@ -41,8 +42,8 @@ class SimulationPanel:
         root.setSpacing(6)
 
         # ── Simulation section ───────────────────────────────────────────────
-        sim_group = QtWidgets.QGroupBox("Simulation")
-        sim_layout = QtWidgets.QVBoxLayout(sim_group)
+        sim_group, sim_layout = collapsible_section(
+            "Simulation", QtWidgets.QVBoxLayout)
 
         self._world_label = QtWidgets.QLabel()
         self._world_label.setWordWrap(True)
@@ -90,8 +91,8 @@ class SimulationPanel:
             QtCore.Qt.TextSelectableByMouse)
         sim_layout.addWidget(self.threading_status_label)
 
-        stop_group = QtWidgets.QGroupBox("Conditional Stop")
-        stop_layout = QtWidgets.QVBoxLayout(stop_group)
+        stop_group, stop_layout = collapsible_section(
+            "Conditional Stop", QtWidgets.QVBoxLayout, expanded=False)
         self.stop_on_contact_check = QtWidgets.QCheckBox(
             "Enable conditional stop")
         self.stop_on_contact_check.setToolTip(
@@ -101,15 +102,7 @@ class SimulationPanel:
         self.stop_target_combo = QtWidgets.QComboBox()
         self._populate_stop_targets()
         self.stop_body_type_combo = QtWidgets.QComboBox()
-        self.stop_body_type_combo.addItems(["Active", "Passive", "Any"])
-        self.stop_delay_spin = QtWidgets.QDoubleSpinBox()
-        self.stop_delay_spin.setRange(0.0, 3600.0)
-        self.stop_delay_spin.setDecimals(3)
-        self.stop_delay_spin.setSingleStep(0.1)
-        self.stop_delay_spin.setSuffix(" s")
-        self.stop_delay_spin.setToolTip(
-            "Continue simulating for this duration after the first target contact. "
-            "0 stops immediately.")
+        self.stop_body_type_combo.addItems(["Dynamic", "Fixed", "Any"])
         stop_layout.addWidget(self.stop_on_contact_check)
         trigger_group = QtWidgets.QGroupBox("Trigger")
         trigger_form = QtWidgets.QFormLayout(trigger_group)
@@ -118,11 +111,6 @@ class SimulationPanel:
         self.stop_body_type_label = QtWidgets.QLabel("Matching body type:")
         trigger_form.addRow(self.stop_body_type_label, self.stop_body_type_combo)
         stop_layout.addWidget(trigger_group)
-        response_group = QtWidgets.QGroupBox("Response")
-        response_form = QtWidgets.QFormLayout(response_group)
-        response_form.addRow("Delay after trigger:", self.stop_delay_spin)
-        stop_layout.addWidget(response_group)
-        sim_layout.addWidget(stop_group)
 
         collision_row = QtWidgets.QHBoxLayout()
         self.collision_chk = QtWidgets.QCheckBox("Show Collision Shapes")
@@ -140,10 +128,11 @@ class SimulationPanel:
         sim_layout.addLayout(collision_row)
 
         root.addWidget(sim_group)
+        root.addWidget(stop_group)
 
         # ── Playback section ─────────────────────────────────────────────────
-        play_group = QtWidgets.QGroupBox("Playback")
-        play_layout = QtWidgets.QVBoxLayout(play_group)
+        play_group, play_layout = collapsible_section(
+            "Playback", QtWidgets.QVBoxLayout)
 
         self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider.setRange(0, 0)
@@ -223,8 +212,8 @@ class SimulationPanel:
 
         root.addWidget(play_group)
 
-        analysis_group = QtWidgets.QGroupBox("Analysis")
-        analysis_layout = QtWidgets.QHBoxLayout(analysis_group)
+        analysis_group, analysis_layout = collapsible_section(
+            "Analysis", QtWidgets.QHBoxLayout, expanded=False)
         analysis_layout.addWidget(QtWidgets.QLabel("Speed horizontal axis:"))
         self.speed_graph_axis = QtWidgets.QComboBox()
         self.speed_graph_axis.addItems(["Time", "Frame"])
@@ -266,7 +255,6 @@ class SimulationPanel:
         self.stop_type_combo.currentIndexChanged.connect(self._save_stop_condition)
         self.stop_type_combo.currentIndexChanged.connect(self._update_stop_target_state)
         self.stop_body_type_combo.currentIndexChanged.connect(self._save_stop_condition)
-        self.stop_delay_spin.valueChanged.connect(self._save_stop_condition)
         self.speed_combo.currentIndexChanged.connect(self._save_panel_settings)
         self.loop_chk.toggled.connect(self._save_panel_settings)
         self.speed_graph_axis.currentIndexChanged.connect(self._save_panel_settings)
@@ -305,17 +293,11 @@ class SimulationPanel:
         show_body_type = self.stop_type_combo.currentText() == "Collision Object"
         self.stop_body_type_label.setVisible(show_body_type)
         self.stop_body_type_combo.setVisible(show_body_type)
-        self.stop_delay_spin.setEnabled(enabled)
 
     def _stop_target(self):
         if not self.stop_on_contact_check.isChecked():
             return None
         return self.stop_target_combo.currentData()
-
-    def _stop_delay(self):
-        if not self.stop_on_contact_check.isChecked():
-            return 0.0
-        return self.stop_delay_spin.value()
 
     def _conditional_stop_world(self):
         from ..objects.ChronoWorld import find_world
@@ -333,12 +315,13 @@ class SimulationPanel:
         self._loading_stop_condition = True
         self.stop_on_contact_check.setChecked(
             getattr(world, "ConditionalStopEnabled", False))
-        self.stop_delay_spin.setValue(max(
-            0.0, getattr(world, "ConditionalStopDelay", 0.0)))
         self.stop_type_combo.setCurrentText(
             getattr(world, "ConditionalStopType", "Collision Object"))
         self.stop_body_type_combo.setCurrentText(
-            getattr(world, "ConditionalStopBodyType", "Active"))
+            ("Fixed" if getattr(world, "ConditionalStopBodyType", "Dynamic")
+             in ("Fixed", "Passive") else
+             "Dynamic" if getattr(world, "ConditionalStopBodyType", "Dynamic") == "Active"
+             else getattr(world, "ConditionalStopBodyType", "Dynamic")))
         for index in range(self.stop_target_combo.count()):
             if self.stop_target_combo.itemData(index) == target:
                 self.stop_target_combo.setCurrentIndex(index)
@@ -355,7 +338,6 @@ class SimulationPanel:
         world.ConditionalStopTarget = self._stop_target()
         world.ConditionalStopType = self.stop_type_combo.currentText()
         world.ConditionalStopBodyType = self.stop_body_type_combo.currentText()
-        world.ConditionalStopDelay = self.stop_delay_spin.value()
         world.Document.recompute()
 
     def _load_panel_settings(self):
@@ -402,17 +384,17 @@ class SimulationPanel:
             end_time  = getattr(world, "EndTime", 10.0)
             tick_ms   = world.TimeStep / sub_steps * 1000
             self._world_label.setText(
-                f"<b>Physics World:</b> {world.Label}<br>"
+                f"<b>Chrono System:</b> {world.Label}<br>"
                 f"Gravity: {world.Gravity:.2f} m/s²  "
                 f"dir ({d.x:.1f}, {d.y:.1f}, {d.z:.1f})<br>"
                 f"End time: {end_time:.2f} s  ·  "
                 f"Frame: {world.TimeStep*1000:.2f} ms  ·  "
-                f"SubSteps: {sub_steps}  ·  "
+                f"Integration substeps: {sub_steps}  ·  "
                 f"Tick: {tick_ms:.3f} ms"
             )
         else:
             self._world_label.setText(
-                "<i>No Physics World found.<br>"
+                "<i>No Chrono System found.<br>"
                 "Create a container first.</i>"
             )
 
@@ -420,8 +402,10 @@ class SimulationPanel:
         """Show the backend and setup-specific threading limitation in-panel."""
         from ..simulation.ChronoSimulation import multithreading_support
 
+        world = self._conditional_stop_world()
         support = multithreading_support(
-            cpu_parallel=self.cpu_parallel_chk.isChecked())
+            cpu_parallel=self.cpu_parallel_chk.isChecked(),
+            contact_model=getattr(world, "ContactModel", "NSC"))
         colors = {
             "supported": ("#173d25", "#b7f5ca", "#3a9d5d"),
             "partial": ("#493613", "#ffe6a3", "#b88622"),
@@ -475,7 +459,6 @@ class SimulationPanel:
         result = run_simulation(
             callback=cb,
             stop_on_contact=self._stop_target(),
-            stop_delay=self._stop_delay(),
             stop_body_type=self.stop_body_type_combo.currentText(),
             cpu_parallel=self.cpu_parallel_chk.isChecked())
         self.sim_btn.setEnabled(True)
@@ -802,7 +785,7 @@ class SimulationPanel:
         doc.openTransaction(f"Bake simulation frame {frame_idx} as new origin")
         try:
             for rb in collect_rigid_bodies():
-                if rb.BodyType == "Passive":
+                if rb.BodyType in ("Fixed", "Passive"):
                     continue
                 link_name = rb.BodyLink.Name
                 new_pl = frame.get(link_name, rb.BodyLink.Placement)
@@ -903,7 +886,7 @@ class RunSimulationCommand:
         return {
             "Pixmap": os.path.join(_icons_path(), "RunSimulation.svg"),
             "MenuText": "Run Simulation",
-            "ToolTip": "Simulate and play back with timeline. Settings from Physics World.",
+            "ToolTip": "Simulate and play back with timeline. Settings from the Chrono System.",
         }
 
     def IsActive(self):

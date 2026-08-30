@@ -22,7 +22,7 @@ class AddDestroyRigidBodyCommand:
             "MenuText": "Add Destroy Rigid Body",
             "ToolTip": (
                 "Use the selected shape as a destruction trigger.\n"
-                "Active rigid bodies that touch it are disabled or deleted."
+                "Dynamic rigid bodies that touch it are disabled or deleted."
             ),
         }
 

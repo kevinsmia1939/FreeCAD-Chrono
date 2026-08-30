@@ -1,4 +1,5 @@
 import FreeCAD
+from ..GuiUtils import collapsible_section
 
 
 class ChronoWorldFeature:
@@ -23,49 +24,53 @@ class ChronoWorldFeature:
         obj.TimeStep = 1.0 / 60.0
 
         obj.addProperty("App::PropertyInteger", "SolverIterations", "Simulation",
-                        "Chrono constraint-solver iterations per step")
+                        "Maximum iterations for Chrono's iterative constraint solver per integration step")
         obj.SolverIterations = 10
+
+        obj.addProperty("App::PropertyEnumeration", "ContactModel", "Contact",
+                        "Chrono contact formulation: NSC is non-smooth; SMC is penalty based")
+        obj.ContactModel = ["NSC", "SMC"]
 
         obj.addProperty("App::PropertyBool", "EnableCPUParallel", "Simulation",
                         "Use Chrono's multicore collision system and all available core/Eigen threads")
         obj.EnableCPUParallel = True
 
         obj.addProperty("App::PropertyInteger", "SubSteps", "Simulation",
-                        "Physics sub-steps per recorded frame. "
+                        "Integration substeps per recorded frame. "
                         "Higher values prevent objects passing through each other "
                         "at the cost of simulation time (default 4)")
         obj.SubSteps = 4
 
         obj.addProperty("App::PropertyFloat", "CollisionMargin", "Simulation",
-                        "Chrono collision margin in metres applied to every collision shape. "
+                        "Chrono collision envelope in metres applied to every collision shape. "
                         "Smaller values let objects appear to touch. "
                         "Chrono's built-in default is 0.04 m.")
         obj.CollisionMargin = 0.001
 
         obj.addProperty("App::PropertyBool", "StopWhenSettled", "Simulation",
-                        "End the simulation after all active bodies remain below the settle thresholds")
+                        "End the simulation after all dynamic bodies remain below the settle thresholds")
         obj.StopWhenSettled = False
         obj.addProperty("App::PropertyFloat", "SettleLinearVelocity", "Simulation",
-                        "Maximum linear speed in m/s for an active body to be considered settled")
+                        "Maximum linear speed in m/s for a dynamic body to be considered settled")
         obj.SettleLinearVelocity = 0.01
         obj.addProperty("App::PropertyFloat", "SettleAngularVelocity", "Simulation",
-                        "Maximum angular speed in rad/s for an active body to be considered settled")
+                        "Maximum angular speed in rad/s for a dynamic body to be considered settled")
         obj.SettleAngularVelocity = 0.01
         obj.addProperty("App::PropertyFloat", "SettleDuration", "Simulation",
-                        "Time in seconds that every active body must remain settled before stopping")
+                        "Time in seconds that every dynamic body must remain settled before stopping")
         obj.SettleDuration = 0.5
 
         obj.addProperty("App::PropertyBool", "ConditionalStopEnabled", "Conditions",
-                        "Stop after an active body touches the selected target")
+                        "Stop after a dynamic body touches the selected target")
         obj.ConditionalStopEnabled = False
         obj.addProperty("App::PropertyLink", "ConditionalStopTarget", "Conditions",
                         "Non-physical target shape used for the conditional stop")
         obj.addProperty("App::PropertyEnumeration", "ConditionalStopType", "Conditions",
-                        "Stop when an active/passive body contacts a shape or enters an observer")
+                        "Stop when a dynamic/fixed body contacts a shape or enters an observer")
         obj.ConditionalStopType = ["Collision Object", "Observer"]
         obj.addProperty("App::PropertyEnumeration", "ConditionalStopBodyType", "Conditions",
                         "Rigid-body type required to satisfy the conditional stop")
-        obj.ConditionalStopBodyType = ["Active", "Passive", "Any"]
+        obj.ConditionalStopBodyType = ["Dynamic", "Fixed", "Any"]
         obj.addProperty("App::PropertyFloat", "ConditionalStopDelay", "Conditions",
                         "Time in seconds to continue after the first target contact")
         obj.ConditionalStopDelay = 0.0
@@ -117,6 +122,14 @@ class ChronoWorldFeature:
             obj.addProperty("App::PropertyBool", "EnableCPUParallel", "Simulation",
                             "Use Chrono's multicore collision system and all available core/Eigen threads")
             obj.EnableCPUParallel = True
+        if not hasattr(obj, "ContactModel"):
+            obj.addProperty("App::PropertyEnumeration", "ContactModel", "Contact",
+                            "Chrono contact formulation: NSC is non-smooth; SMC is penalty based")
+            obj.ContactModel = ["NSC", "SMC"]
+        else:
+            selected_model = getattr(obj, "ContactModel", "NSC")
+            obj.ContactModel = ["NSC", "SMC"]
+            obj.ContactModel = selected_model if selected_model in ("NSC", "SMC") else "NSC"
         if not hasattr(obj, "LinearDamping"):
             obj.addProperty("App::PropertyFloat", "LinearDamping", "Physics",
                             "Air damping applied to linear (translational) velocity of active "
@@ -129,7 +142,7 @@ class ChronoWorldFeature:
             obj.AngularDamping = 0.0
         if not hasattr(obj, "CollisionMargin"):
             obj.addProperty("App::PropertyFloat", "CollisionMargin", "Simulation",
-                            "Chrono collision margin in metres applied to every collision shape. "
+                            "Chrono collision envelope in metres applied to every collision shape. "
                             "Smaller values let objects appear to touch. "
                             "Chrono's built-in default is 0.04 m.")
             obj.CollisionMargin = 0.001
@@ -163,7 +176,7 @@ class ChronoWorldFeature:
         if not hasattr(obj, "ConditionalStopBodyType"):
             obj.addProperty("App::PropertyEnumeration", "ConditionalStopBodyType", "Conditions",
                             "Rigid-body type required to satisfy the conditional stop")
-            obj.ConditionalStopBodyType = ["Active", "Passive", "Any"]
+            obj.ConditionalStopBodyType = ["Dynamic", "Fixed", "Any"]
         if not hasattr(obj, "ConditionalStopDelay"):
             obj.addProperty("App::PropertyFloat", "ConditionalStopDelay", "Conditions",
                             "Time in seconds to continue after the first target contact")
@@ -184,6 +197,11 @@ class ChronoWorldFeature:
             obj.addProperty("App::PropertyString", "SpeedGraphAxis", "Analysis",
                             "Horizontal axis selected for the particle speed graph")
             obj.SpeedGraphAxis = "Time"
+        selected_type = getattr(obj, "ConditionalStopBodyType", "Dynamic")
+        obj.ConditionalStopBodyType = ["Dynamic", "Fixed", "Any"]
+        obj.ConditionalStopBodyType = (
+            "Any" if selected_type == "Any"
+            else "Fixed" if selected_type in ("Fixed", "Passive") else "Dynamic")
 
     def execute(self, obj):
         pass
@@ -209,7 +227,7 @@ class WorldSettingsPanel:
             world_obj.Proxy._ensure_properties(world_obj)
 
         self.form = QtWidgets.QWidget()
-        self.form.setWindowTitle("Physics World Settings")
+        self.form.setWindowTitle("Chrono System Settings")
         self.form.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding,
             QtWidgets.QSizePolicy.Expanding)
@@ -217,8 +235,8 @@ class WorldSettingsPanel:
         root = QtWidgets.QVBoxLayout(self.form)
 
         # ── Physics ───────────────────────────────────────────────────────────
-        phys_group = QtWidgets.QGroupBox("Physics")
-        phys_form  = QtWidgets.QFormLayout(phys_group)
+        phys_group, phys_form = collapsible_section(
+            "Physics", QtWidgets.QFormLayout)
 
         self.inp_gravity = QtWidgets.QDoubleSpinBox()
         self.inp_gravity.setRange(0.0, 1000.0)
@@ -266,8 +284,8 @@ class WorldSettingsPanel:
         root.addWidget(phys_group)
 
         # ── Simulation ────────────────────────────────────────────────────────
-        sim_group = QtWidgets.QGroupBox("Simulation")
-        sim_form  = QtWidgets.QFormLayout(sim_group)
+        sim_group, sim_form = collapsible_section(
+            "Simulation", QtWidgets.QFormLayout)
 
         self.inp_end_time = QtWidgets.QDoubleSpinBox()
         self.inp_end_time.setRange(0.001, 3600.0)
@@ -290,17 +308,25 @@ class WorldSettingsPanel:
 
         self.inp_solver = QtWidgets.QSpinBox()
         self.inp_solver.setRange(1, 1000)
-        self.inp_solver.setToolTip("Chrono constraint-solver iterations per step")
+        self.inp_solver.setToolTip("Maximum iterations for Chrono's iterative constraint solver per integration step")
         self.inp_solver.setValue(getattr(world_obj, "SolverIterations", 10))
-        sim_form.addRow("Solver Iterations:", self.inp_solver)
+        sim_form.addRow("Maximum Solver Iterations:", self.inp_solver)
+
+        self.inp_contact_model = QtWidgets.QComboBox()
+        self.inp_contact_model.addItems(["NSC", "SMC"])
+        self.inp_contact_model.setCurrentText(getattr(world_obj, "ContactModel", "NSC"))
+        self.inp_contact_model.setToolTip(
+            "NSC: non-smooth complementarity contacts, appropriate for rigid bodies.\n"
+            "SMC: smooth penalty contacts, requiring stiffness/damping material data.")
+        sim_form.addRow("Contact Model:", self.inp_contact_model)
 
         self.inp_substeps = QtWidgets.QSpinBox()
         self.inp_substeps.setRange(1, 1000)
         self.inp_substeps.setToolTip(
-            "Physics sub-steps per recorded frame.\n"
+            "Integration substeps per recorded frame.\n"
             "Higher values improve collision accuracy at the cost of simulation time.")
         self.inp_substeps.setValue(getattr(world_obj, "SubSteps", 4))
-        sim_form.addRow("Sub Steps:", self.inp_substeps)
+        sim_form.addRow("Integration Substeps:", self.inp_substeps)
 
         self.inp_margin = QtWidgets.QDoubleSpinBox()
         self.inp_margin.setRange(0.0, 1.0)
@@ -308,17 +334,17 @@ class WorldSettingsPanel:
         self.inp_margin.setSingleStep(0.001)
         self.inp_margin.setSuffix(" m")
         self.inp_margin.setToolTip(
-            "Chrono collision margin applied to every shape.\n"
+            "Chrono collision envelope applied to every shape.\n"
             "Smaller values let objects appear to touch.\n"
             "0.001 m is a good default for typical FreeCAD models.\n"
             "Chrono's built-in default is 0.04 m.")
         self.inp_margin.setValue(getattr(world_obj, "CollisionMargin", 0.001))
-        sim_form.addRow("Collision Margin:", self.inp_margin)
+        sim_form.addRow("Collision Envelope:", self.inp_margin)
 
         self.inp_stop_when_settled = QtWidgets.QCheckBox(
-            "Finish simulation when active bodies settle")
+            "Finish simulation when dynamic bodies settle")
         self.inp_stop_when_settled.setToolTip(
-            "Stop after every active body stays below the selected velocity thresholds.\n"
+            "Stop after every dynamic body stays below the selected velocity thresholds.\n"
             "Pending launcher and emitter events keep the simulation running.")
         self.inp_stop_when_settled.setChecked(
             getattr(world_obj, "StopWhenSettled", False))
@@ -386,6 +412,7 @@ class WorldSettingsPanel:
         obj.EndTime          = self.inp_end_time.value()
         obj.TimeStep         = self.inp_timestep.value()
         obj.SolverIterations = self.inp_solver.value()
+        obj.ContactModel      = self.inp_contact_model.currentText()
         obj.SubSteps         = self.inp_substeps.value()
         obj.CollisionMargin  = self.inp_margin.value()
         obj.StopWhenSettled = self.inp_stop_when_settled.isChecked()

@@ -19,7 +19,7 @@ class CreateContainerCommand:
             "Pixmap": os.path.join(_icons_path(), "ChronoContainer.svg"),
             "MenuText": "Create Physics Container",
             "ToolTip": (
-                "Create a Chrono Physics container with a Physics World object.\n"
+                "Create a Chrono Physics container with a Chrono System object.\n"
                 "All rigid bodies and settings are organized inside this container."
             ),
         }

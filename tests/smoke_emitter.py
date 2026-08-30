@@ -27,6 +27,7 @@ try:
     emitter.UseParticlesPerSecond = False
     emitter.Count = 3
     emitter.StartTime = 0.0
+    emitter.EndConditionType = "Time"
     emitter.EndTime = 0.04
     world = container.World
     world.EndTime = 0.08

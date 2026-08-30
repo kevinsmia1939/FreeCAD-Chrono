@@ -1,5 +1,13 @@
 import FreeCAD
 
+BODY_TYPE_DYNAMIC = "Dynamic"
+BODY_TYPE_FIXED = "Fixed"
+
+
+def canonical_body_type(body_type):
+    """Map legacy Bullet-style names to Chrono's ChBody terminology."""
+    return BODY_TYPE_FIXED if body_type in ("Fixed", "Passive") else BODY_TYPE_DYNAMIC
+
 
 class RigidBodyFeature:
     """
@@ -13,25 +21,36 @@ class RigidBodyFeature:
         obj.addProperty("App::PropertyLink", "BodyLink", "RigidBody",
                         "App::Link clone — simulation moves this")
         obj.addProperty("App::PropertyEnumeration", "BodyType", "RigidBody",
-                        "Active: moved by physics.  Passive: static collider.")
-        obj.BodyType = ["Active", "Passive"]
+                        "Dynamic: integrated by Chrono. Fixed: ChBody::SetFixed(true).")
+        obj.BodyType = [BODY_TYPE_DYNAMIC, BODY_TYPE_FIXED]
         obj.addProperty("App::PropertyBool", "Enabled", "RigidBody",
                         "Include this body in Chrono Physics simulations")
         obj.Enabled = True
         obj.addProperty("App::PropertyFloat", "Density", "RigidBody",
                         "Material density in kg/m³. Mass is computed automatically "
-                        "as density × shape volume. Ignored for Passive bodies.")
+                        "as density × shape volume. Ignored for Fixed bodies.")
         obj.Density = 1000.0
         obj.addProperty("App::PropertyFloat", "Restitution", "RigidBody",
                         "Bounciness 0 (none) → 1 (perfect)")
         obj.Restitution = 0.3
-        obj.addProperty("App::PropertyFloat", "Friction", "RigidBody",
-                        "Friction coefficient")
-        obj.Friction = 0.5
-        obj.addProperty("App::PropertyFloat", "MeshResolution", "RigidBody",
-                        "Tessellation chord deviation in mm for this body's mesh collision "
-                        "shape. 0 = use Physics World default. Ignored for primitives.")
-        obj.MeshResolution = 0.0
+        for name, description, value in (
+                ("StaticFriction", "Static friction coefficient", 0.5),
+                ("SlidingFriction", "Sliding friction coefficient", 0.5),
+                ("RollingFriction", "Rolling resistance coefficient (m in NSC)", 0.0),
+                ("SpinningFriction", "Spinning resistance coefficient (m in NSC)", 0.0),
+                ("Cohesion", "Maximum tensile contact force in NSC (N)", 0.0),
+                ("ContactDamping", "NSC contact damping factor (s)", 0.0),
+                ("NormalCompliance", "NSC normal compliance (m/N)", 0.0),
+                ("TangentialCompliance", "NSC tangential compliance (m/N)", 0.0),
+                ("YoungModulus", "SMC Young's modulus (Pa)", 2.0e7),
+                ("PoissonRatio", "SMC Poisson ratio", 0.3),
+                ("Adhesion", "SMC constant adhesion force (N)", 0.0),
+                ("NormalStiffness", "SMC optional normal stiffness (N/m; 0 uses model)", 0.0),
+                ("TangentialStiffness", "SMC optional tangential stiffness (N/m; 0 uses model)", 0.0),
+                ("NormalDamping", "SMC optional normal damping (N s/m; 0 uses model)", 0.0),
+                ("TangentialDamping", "SMC optional tangential damping (N s/m; 0 uses model)", 0.0)):
+            obj.addProperty("App::PropertyFloat", name, "Contact Material", description)
+            setattr(obj, name, value)
         obj.addProperty("App::PropertyEnumeration", "ShapeOverride", "RigidBody",
                         "Override the auto-detected collision shape type. "
                         "'Auto' uses the shape detected from geometry. "
@@ -48,6 +67,30 @@ class RigidBodyFeature:
             obj.addProperty("App::PropertyBool", "Enabled", "RigidBody",
                             "Include this body in Chrono Physics simulations")
             obj.Enabled = True
+        # Documents created before the Chrono terminology cleanup stored
+        # Bullet-style Active/Passive enum entries. Preserve their intent.
+        selected = canonical_body_type(getattr(obj, "BodyType", BODY_TYPE_DYNAMIC))
+        obj.BodyType = [BODY_TYPE_DYNAMIC, BODY_TYPE_FIXED]
+        obj.BodyType = selected
+        legacy_friction = getattr(obj, "Friction", 0.5)
+        for name, value in (
+                ("StaticFriction", legacy_friction),
+                ("SlidingFriction", legacy_friction),
+                ("RollingFriction", 0.0), ("SpinningFriction", 0.0),
+                ("Cohesion", 0.0), ("ContactDamping", 0.0),
+                ("NormalCompliance", 0.0), ("TangentialCompliance", 0.0),
+                ("YoungModulus", 2.0e7), ("PoissonRatio", 0.3),
+                ("Adhesion", 0.0), ("NormalStiffness", 0.0),
+                ("TangentialStiffness", 0.0), ("NormalDamping", 0.0),
+                ("TangentialDamping", 0.0)):
+            if not hasattr(obj, name):
+                obj.addProperty("App::PropertyFloat", name, "Contact Material")
+                setattr(obj, name, value)
+        # Friction was superseded by Static/SlidingFriction and tessellation is
+        # now intentionally global, controlled by the Chrono System only.
+        for name in ("Friction", "MeshResolution"):
+            if hasattr(obj, name):
+                obj.removeProperty(name)
 
     def onChanged(self, obj, prop):
         if prop == "BodyType" and getattr(obj, "BodyLink", None) is not None:
@@ -81,7 +124,8 @@ class RigidBodyViewProvider:
         from .. import ChronoUtils
         obj = self.Object
         name = ("AddPassiveBody.svg"
-                if hasattr(obj, "BodyType") and obj.BodyType == "Passive"
+                if hasattr(obj, "BodyType")
+                and canonical_body_type(obj.BodyType) == BODY_TYPE_FIXED
                 else "AddActiveBody.svg")
         return os.path.join(ChronoUtils.ICONS_PATH, name)
 
@@ -110,7 +154,7 @@ class RigidBodyViewProvider:
         return None
 
 
-def make_rigid_body(original_obj, body_type="Active", container=None, enabled=True):
+def make_rigid_body(original_obj, body_type=BODY_TYPE_DYNAMIC, container=None, enabled=True):
     """
     Create an App::Link clone of *original_obj* and wrap it in a RigidBody
     feature.  The original is never modified.  Both are added to *container*
@@ -130,12 +174,12 @@ def make_rigid_body(original_obj, body_type="Active", container=None, enabled=Tr
     RigidBodyFeature(rb)
     rb.OriginalObject = original_obj
     rb.BodyLink = link
-    rb.BodyType = body_type
+    rb.BodyType = canonical_body_type(body_type)
     rb.Enabled = bool(enabled)
     rb.Label = f"RigidBody_{original_obj.Label}"
 
     from ..preferences.ChronoPreferences import apply_body_color
-    apply_body_color(link, body_type)
+    apply_body_color(link, rb.BodyType)
 
     if FreeCAD.GuiUp:
         import FreeCADGui

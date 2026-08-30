@@ -184,7 +184,7 @@ class MeshSettingsPanel:
         layout.addLayout(form)
 
         self.status = QtWidgets.QLabel(
-            "Generate meshes for every enabled active and passive rigid body.")
+            "Generate tessellations for every enabled dynamic and fixed rigid body.")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.show_collision_mesh = QtWidgets.QCheckBox("Show collision mesh")

@@ -3,13 +3,13 @@ import FreeCAD
 
 class ChronoLauncherFeature:
     """
-    Keeps the target active rigid body frozen (static) until LaunchTime,
+    Keeps the target dynamic rigid body fixed until LaunchTime,
     then releases it with an instantaneous velocity impulse.
     """
 
     def __init__(self, obj):
         obj.addProperty("App::PropertyLink", "TargetBody", "Launcher",
-                        "The active rigid body to hold and then launch")
+                        "The dynamic rigid body to hold fixed and then launch")
 
         obj.addProperty("App::PropertyFloat", "LaunchTime", "Launcher",
                         "Simulation time in seconds at which the body is released "
