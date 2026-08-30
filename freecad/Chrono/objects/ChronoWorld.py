@@ -100,6 +100,34 @@ class ChronoWorldFeature:
                         "Simulates air/fluid drag on rotation.")
         obj.AngularDamping = 0.0
 
+        obj.addProperty("App::PropertyBool", "EnableVelocityLimit", "Physics",
+                        "Clamp every dynamic body's Chrono linear and angular velocity")
+        obj.EnableVelocityLimit = False
+        obj.addProperty("App::PropertyFloat", "MaximumLinearVelocity", "Physics",
+                        "Chrono linear velocity limit in m/s; active when velocity limiting is enabled")
+        obj.MaximumLinearVelocity = 100.0
+        obj.addProperty("App::PropertyFloat", "MaximumAngularVelocity", "Physics",
+                        "Chrono angular velocity limit in rad/s; active when velocity limiting is enabled")
+        obj.MaximumAngularVelocity = 100.0
+        obj.addProperty("App::PropertyFloat", "MaximumPenetrationRecoverySpeed", "Physics",
+                        "Maximum contact-separation speed in m/s after penetration")
+        obj.MaximumPenetrationRecoverySpeed = 0.6
+        obj.addProperty("App::PropertyBool", "EnableSleeping", "Physics",
+                        "Allow Chrono to deactivate dynamic bodies that remain below sleep thresholds")
+        obj.EnableSleeping = False
+        obj.addProperty("App::PropertyFloat", "SleepTime", "Physics",
+                        "Seconds below the sleep velocity thresholds before a body is deactivated")
+        obj.SleepTime = 0.5
+        obj.addProperty("App::PropertyFloat", "SleepLinearVelocity", "Physics",
+                        "Maximum linear velocity in m/s for automatic Chrono sleeping")
+        obj.SleepLinearVelocity = 0.01
+        obj.addProperty("App::PropertyFloat", "SleepAngularVelocity", "Physics",
+                        "Maximum angular velocity in rad/s for automatic Chrono sleeping")
+        obj.SleepAngularVelocity = 0.01
+        obj.addProperty("App::PropertyBool", "DisableGyroscopicTorque", "Physics",
+                        "Disable gyroscopic torque for improved stability of fast-spinning non-uniform bodies")
+        obj.DisableGyroscopicTorque = False
+
         obj.Proxy = self
 
     def _ensure_properties(self, obj):
@@ -140,6 +168,32 @@ class ChronoWorldFeature:
                             "Air damping applied to angular (rotational) velocity of active "
                             "bodies each step. 0 = no damping, 1 = full stop.")
             obj.AngularDamping = 0.0
+        if not hasattr(obj, "EnableVelocityLimit"):
+            obj.addProperty("App::PropertyBool", "EnableVelocityLimit", "Physics",
+                            "Clamp every dynamic body's Chrono linear and angular velocity")
+            obj.EnableVelocityLimit = False
+        if not hasattr(obj, "MaximumLinearVelocity"):
+            obj.addProperty("App::PropertyFloat", "MaximumLinearVelocity", "Physics",
+                            "Chrono linear velocity limit in m/s; active when velocity limiting is enabled")
+            obj.MaximumLinearVelocity = 100.0
+        if not hasattr(obj, "MaximumAngularVelocity"):
+            obj.addProperty("App::PropertyFloat", "MaximumAngularVelocity", "Physics",
+                            "Chrono angular velocity limit in rad/s; active when velocity limiting is enabled")
+            obj.MaximumAngularVelocity = 100.0
+        for name, description, default in (
+                ("MaximumPenetrationRecoverySpeed",
+                 "Maximum contact-separation speed in m/s after penetration", 0.6),
+                ("EnableSleeping",
+                 "Allow Chrono to deactivate dynamic bodies below sleep thresholds", False),
+                ("SleepTime", "Seconds below sleep velocity thresholds before deactivation", 0.5),
+                ("SleepLinearVelocity", "Maximum linear velocity in m/s for automatic Chrono sleeping", 0.01),
+                ("SleepAngularVelocity", "Maximum angular velocity in rad/s for automatic Chrono sleeping", 0.01),
+                ("DisableGyroscopicTorque",
+                 "Disable gyroscopic torque for improved stability of fast-spinning bodies", False)):
+            if not hasattr(obj, name):
+                property_type = "App::PropertyBool" if isinstance(default, bool) else "App::PropertyFloat"
+                obj.addProperty(property_type, name, "Physics", description)
+                setattr(obj, name, default)
         if not hasattr(obj, "CollisionMargin"):
             obj.addProperty("App::PropertyFloat", "CollisionMargin", "Simulation",
                             "Chrono collision envelope in metres applied to every collision shape. "
@@ -281,6 +335,73 @@ class WorldSettingsPanel:
         self.inp_ang_damp.setValue(getattr(world_obj, "AngularDamping", 0.0))
         phys_form.addRow("Angular Damping:", self.inp_ang_damp)
 
+        self.inp_velocity_limit = QtWidgets.QCheckBox("Enable Chrono velocity limits")
+        self.inp_velocity_limit.setToolTip(
+            "Clamp dynamic-body linear and angular velocities after Chrono solver updates. "
+            "A safety limit, not a substitute for a stable time step.")
+        self.inp_velocity_limit.setChecked(
+            getattr(world_obj, "EnableVelocityLimit", False))
+        phys_form.addRow(self.inp_velocity_limit)
+
+        self.inp_max_linear_velocity = QtWidgets.QDoubleSpinBox()
+        self.inp_max_linear_velocity.setRange(0.001, 1.0e8)
+        self.inp_max_linear_velocity.setDecimals(4)
+        self.inp_max_linear_velocity.setSuffix(" m/s")
+        self.inp_max_linear_velocity.setToolTip(
+            "Maximum linear body velocity while Chrono velocity limits are enabled")
+        self.inp_max_linear_velocity.setValue(max(
+            0.001, getattr(world_obj, "MaximumLinearVelocity", 100.0)))
+        phys_form.addRow("Maximum linear velocity:", self.inp_max_linear_velocity)
+
+        self.inp_max_angular_velocity = QtWidgets.QDoubleSpinBox()
+        self.inp_max_angular_velocity.setRange(0.001, 1.0e8)
+        self.inp_max_angular_velocity.setDecimals(4)
+        self.inp_max_angular_velocity.setSuffix(" rad/s")
+        self.inp_max_angular_velocity.setToolTip(
+            "Maximum angular body velocity while Chrono velocity limits are enabled")
+        self.inp_max_angular_velocity.setValue(max(
+            0.001, getattr(world_obj, "MaximumAngularVelocity", 100.0)))
+        phys_form.addRow("Maximum angular velocity:", self.inp_max_angular_velocity)
+
+        self.inp_penetration_recovery = QtWidgets.QDoubleSpinBox()
+        self.inp_penetration_recovery.setRange(0.0, 100000.0)
+        self.inp_penetration_recovery.setDecimals(5)
+        self.inp_penetration_recovery.setSuffix(" m/s")
+        self.inp_penetration_recovery.setToolTip(
+            "Limit the speed at which Chrono resolves penetration. Lower values reduce explosive separation.")
+        self.inp_penetration_recovery.setValue(max(0.0, getattr(
+            world_obj, "MaximumPenetrationRecoverySpeed", 0.6)))
+        phys_form.addRow("Maximum penetration recovery speed:", self.inp_penetration_recovery)
+
+        self.inp_sleeping = QtWidgets.QCheckBox("Enable Chrono sleeping")
+        self.inp_sleeping.setToolTip(
+            "Deactivate dynamic bodies after they remain below the selected velocity thresholds.")
+        self.inp_sleeping.setChecked(getattr(world_obj, "EnableSleeping", False))
+        phys_form.addRow(self.inp_sleeping)
+        self.inp_sleep_time = QtWidgets.QDoubleSpinBox()
+        self.inp_sleep_time.setRange(0.0, 3600.0)
+        self.inp_sleep_time.setDecimals(4)
+        self.inp_sleep_time.setSuffix(" s")
+        self.inp_sleep_time.setValue(max(0.0, getattr(world_obj, "SleepTime", 0.5)))
+        phys_form.addRow("Sleep time:", self.inp_sleep_time)
+        self.inp_sleep_linear = QtWidgets.QDoubleSpinBox()
+        self.inp_sleep_linear.setRange(0.0, 100000.0)
+        self.inp_sleep_linear.setDecimals(5)
+        self.inp_sleep_linear.setSuffix(" m/s")
+        self.inp_sleep_linear.setValue(max(0.0, getattr(world_obj, "SleepLinearVelocity", 0.01)))
+        phys_form.addRow("Sleep linear velocity:", self.inp_sleep_linear)
+        self.inp_sleep_angular = QtWidgets.QDoubleSpinBox()
+        self.inp_sleep_angular.setRange(0.0, 100000.0)
+        self.inp_sleep_angular.setDecimals(5)
+        self.inp_sleep_angular.setSuffix(" rad/s")
+        self.inp_sleep_angular.setValue(max(0.0, getattr(world_obj, "SleepAngularVelocity", 0.01)))
+        phys_form.addRow("Sleep angular velocity:", self.inp_sleep_angular)
+        self.inp_disable_gyro = QtWidgets.QCheckBox("Disable gyroscopic torque")
+        self.inp_disable_gyro.setToolTip(
+            "Improves stability for fast-spinning thin or non-uniform bodies, at the cost of physical accuracy.")
+        self.inp_disable_gyro.setChecked(getattr(world_obj, "DisableGyroscopicTorque", False))
+        phys_form.addRow(self.inp_disable_gyro)
+
         root.addWidget(phys_group)
 
         # ── Simulation ────────────────────────────────────────────────────────
@@ -384,9 +505,21 @@ class WorldSettingsPanel:
         self.inp_gz.valueChanged.connect(self._apply)
         self.inp_lin_damp.valueChanged.connect(self._apply)
         self.inp_ang_damp.valueChanged.connect(self._apply)
+        self.inp_velocity_limit.toggled.connect(self._update_velocity_limit_controls)
+        self.inp_velocity_limit.toggled.connect(self._apply)
+        self.inp_max_linear_velocity.valueChanged.connect(self._apply)
+        self.inp_max_angular_velocity.valueChanged.connect(self._apply)
+        self.inp_penetration_recovery.valueChanged.connect(self._apply)
+        self.inp_sleeping.toggled.connect(self._update_sleep_controls)
+        self.inp_sleeping.toggled.connect(self._apply)
+        self.inp_sleep_time.valueChanged.connect(self._apply)
+        self.inp_sleep_linear.valueChanged.connect(self._apply)
+        self.inp_sleep_angular.valueChanged.connect(self._apply)
+        self.inp_disable_gyro.toggled.connect(self._apply)
         self.inp_end_time.valueChanged.connect(self._apply)
         self.inp_timestep.valueChanged.connect(self._apply)
         self.inp_solver.valueChanged.connect(self._apply)
+        self.inp_contact_model.currentTextChanged.connect(self._apply)
         self.inp_substeps.valueChanged.connect(self._apply)
         self.inp_margin.valueChanged.connect(self._apply)
         self.inp_stop_when_settled.toggled.connect(self._update_settle_controls)
@@ -395,6 +528,19 @@ class WorldSettingsPanel:
         self.inp_settle_angular.valueChanged.connect(self._apply)
         self.inp_settle_duration.valueChanged.connect(self._apply)
         self._update_settle_controls()
+        self._update_velocity_limit_controls()
+        self._update_sleep_controls()
+
+    def _update_velocity_limit_controls(self):
+        enabled = self.inp_velocity_limit.isChecked()
+        self.inp_max_linear_velocity.setEnabled(enabled)
+        self.inp_max_angular_velocity.setEnabled(enabled)
+
+    def _update_sleep_controls(self):
+        enabled = self.inp_sleeping.isChecked()
+        self.inp_sleep_time.setEnabled(enabled)
+        self.inp_sleep_linear.setEnabled(enabled)
+        self.inp_sleep_angular.setEnabled(enabled)
 
     def _update_settle_controls(self):
         enabled = self.inp_stop_when_settled.isChecked()
@@ -409,6 +555,15 @@ class WorldSettingsPanel:
             self.inp_gx.value(), self.inp_gy.value(), self.inp_gz.value())
         obj.LinearDamping    = self.inp_lin_damp.value()
         obj.AngularDamping   = self.inp_ang_damp.value()
+        obj.EnableVelocityLimit = self.inp_velocity_limit.isChecked()
+        obj.MaximumLinearVelocity = self.inp_max_linear_velocity.value()
+        obj.MaximumAngularVelocity = self.inp_max_angular_velocity.value()
+        obj.MaximumPenetrationRecoverySpeed = self.inp_penetration_recovery.value()
+        obj.EnableSleeping = self.inp_sleeping.isChecked()
+        obj.SleepTime = self.inp_sleep_time.value()
+        obj.SleepLinearVelocity = self.inp_sleep_linear.value()
+        obj.SleepAngularVelocity = self.inp_sleep_angular.value()
+        obj.DisableGyroscopicTorque = self.inp_disable_gyro.isChecked()
         obj.EndTime          = self.inp_end_time.value()
         obj.TimeStep         = self.inp_timestep.value()
         obj.SolverIterations = self.inp_solver.value()

@@ -76,6 +76,7 @@ class SimulationPanel:
         sim_layout.addWidget(self.progress)
 
         self.sim_status = QtWidgets.QLabel("Ready.")
+        self.sim_status.setWordWrap(True)
         sim_layout.addWidget(self.sim_status)
 
         self.cpu_parallel_chk = QtWidgets.QCheckBox("Enable CPU parallelization")
@@ -428,7 +429,7 @@ class SimulationPanel:
 
     def _run_simulation(self):
         from ..simulation.ChronoSimulation import (
-            get_last_stop_reason, run_simulation)
+            get_last_error, get_last_stop_reason, run_simulation)
         self._stop()
         self._refresh_world_label()
         self._update_multithreading_status()
@@ -443,12 +444,24 @@ class SimulationPanel:
         for button in (self.reset_btn, self.delete_cache_btn, self.bake_btn):
             button.setEnabled(False)
         self.progress.setValue(0)
+        self.sim_status.setStyleSheet("")
         self.sim_status.setText("Running…")
 
         def cb(done, total, frames, speed_frames, time_step):
-            self._update_live_frames(frames, speed_frames, time_step)
-            self.progress.setValue(int(done * 100 / total))
-            QtWidgets.QApplication.processEvents()
+            # processEvents() can accept the task-panel OK/Cancel action. Do
+            # not touch any Qt widget after that action has closed the panel.
+            if self._closed:
+                return False
+            try:
+                self._update_live_frames(frames, speed_frames, time_step)
+                self.progress.setValue(int(done * 100 / total))
+                QtWidgets.QApplication.processEvents()
+            except RuntimeError:
+                # The panel was destroyed by FreeCAD before its accept/reject
+                # callback could run. Stop Chrono on the next safe boundary.
+                self._closed = True
+                self._sim_stop_requested = True
+                return False
             while (self._sim_paused and not self._sim_stop_requested
                    and not self._closed):
                 QtWidgets.QApplication.processEvents()
@@ -461,21 +474,33 @@ class SimulationPanel:
             stop_on_contact=self._stop_target(),
             stop_body_type=self.stop_body_type_combo.currentText(),
             cpu_parallel=self.cpu_parallel_chk.isChecked())
+        if self._closed:
+            return
         self.sim_btn.setEnabled(True)
         self.stop_sim_btn.setEnabled(False)
         self.pause_sim_btn.setEnabled(False)
+        self.pause_sim_btn.setText("Pause")
+        self.pause_sim_btn.setIcon(
+            self.form.style().standardIcon(QtWidgets.QStyle.SP_MediaPause))
         self._sim_paused = False
 
         if not result:
             self.reset_btn.setEnabled(True)
             self.delete_cache_btn.setEnabled(True)
             self.bake_btn.setEnabled(bool(self.frames))
-            self.sim_status.setText("Simulation failed — see Report View.")
+            message = get_last_error() or "Simulation failed — see Report View."
+            self.sim_status.setStyleSheet(
+                "QLabel { color: #ff6b6b; font-weight: bold; }")
+            self.sim_status.setText(f"Simulation failed: {message}")
+            self.sim_status.setToolTip(message)
             return
 
         self.frames, self.time_step, self.speed_frames = result
         from ..simulation.ChronoSimulation import save_simulation_cache
         save_simulation_cache(self.frames, self.time_step, self.speed_frames)
+        from ..simulation.ChronoSimulation import refresh_emitted_link_groups
+        if self.frames:
+            refresh_emitted_link_groups(final_frame=self.frames[-1])
         self._populate_playback(apply_first_frame=True)
         if self.collision_chk.isChecked():
             self._rebuild_wireframes()
@@ -492,6 +517,7 @@ class SimulationPanel:
             stopped = ""
         self.sim_status.setText(
             f"Done — {n} frames  ({total_secs:.2f} s simulated){stopped}")
+        self.sim_status.setToolTip("")
 
     def _stop_simulation(self):
         self._sim_stop_requested = True
@@ -524,6 +550,8 @@ class SimulationPanel:
 
     def _update_live_frames(self, frames, speed_frames, time_step):
         """Expose recorded frames to the slider without altering live Chrono state."""
+        if self._closed:
+            return
         self.frames = frames
         self.speed_frames = speed_frames
         self.time_step = time_step
@@ -555,11 +583,14 @@ class SimulationPanel:
         if result is None:
             return
         self.frames, self.time_step, self.speed_frames = result
-        self._populate_playback(apply_first_frame=False)
+        # A previous panel may have been closed while the document was showing
+        # its final simulated pose.  Restore frame zero here so the visible
+        # model, slider, and the next Play action all start at the same point.
+        self._populate_playback(apply_first_frame=True)
         n = len(self.frames) - 1
         total_secs = n * self.time_step
         self.sim_status.setText(
-            f"Cache loaded — {n} steps  ({total_secs:.2f} s simulated)")
+            f"Cache restored — {n} steps  ({total_secs:.2f} s simulated)")
 
     def _populate_playback(self, apply_first_frame=False):
         """Enable all playback controls after frames are loaded."""
@@ -868,13 +899,23 @@ class SimulationPanel:
             remove_collision_mesh_displays(self._mesh_infos)
             self._mesh_infos = []
 
-    def reject(self):
+    def _close_panel(self):
         self._closed = True
         self._sim_stop_requested = True
         self._sim_paused = False
         self._stop()
         self._hide_wireframes()
+        self._hide_mesh_displays()
+
+    def accept(self):
+        """Handle the task panel's OK button while a simulation is live."""
+        self._close_panel()
+        return True
+
+    def reject(self):
+        self._close_panel()
         FreeCADGui.Control.closeDialog()
+        return True
 
 
 # ---------------------------------------------------------------------------

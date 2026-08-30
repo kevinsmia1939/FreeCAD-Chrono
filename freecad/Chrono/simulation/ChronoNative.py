@@ -299,6 +299,9 @@ def setPhysicsEngineParameter(physicsClientId=0, **parameters):
     if "numSolverThreads" in parameters:
         threads = max(1, int(parameters["numSolverThreads"]))
         client.system.SetNumThreads(threads)
+    if "maximumPenetrationRecoverySpeed" in parameters:
+        client.system.SetMaxPenetrationRecoverySpeed(max(
+            0.0, float(parameters["maximumPenetrationRecoverySpeed"]) * _LENGTH_SCALE))
 
 
 def createCollisionShape(shapeType, physicsClientId=0, **parameters):
@@ -418,6 +421,24 @@ def changeDynamics(bodyUniqueId, _linkIndex, physicsClientId=0, **parameters):
         state.linear_damping = max(0.0, float(parameters["linearDamping"]))
     if "angularDamping" in parameters:
         state.angular_damping = max(0.0, float(parameters["angularDamping"]))
+    if "enableVelocityLimit" in parameters:
+        body.SetLimitSpeed(bool(parameters["enableVelocityLimit"]))
+    if "maximumLinearVelocity" in parameters:
+        body.SetMaxLinVel(max(
+            0.0, float(parameters["maximumLinearVelocity"]) * _LENGTH_SCALE))
+    if "maximumAngularVelocity" in parameters:
+        body.SetMaxAngVel(max(0.0, float(parameters["maximumAngularVelocity"])))
+    if "sleepingAllowed" in parameters:
+        body.SetSleepingAllowed(bool(parameters["sleepingAllowed"]))
+    if "sleepTime" in parameters:
+        body.SetSleepTime(max(0.0, float(parameters["sleepTime"])))
+    if "sleepLinearVelocity" in parameters:
+        body.SetSleepMinLinVel(max(
+            0.0, float(parameters["sleepLinearVelocity"]) * _LENGTH_SCALE))
+    if "sleepAngularVelocity" in parameters:
+        body.SetSleepMinAngVel(max(0.0, float(parameters["sleepAngularVelocity"])))
+    if "disableGyroscopicTorque" in parameters:
+        body.SetUseGyroTorque(not bool(parameters["disableGyroscopicTorque"]))
     if "mass" in parameters:
         external_mass = max(0.0, float(parameters["mass"]))
         mass = external_mass * _MASS_SCALE

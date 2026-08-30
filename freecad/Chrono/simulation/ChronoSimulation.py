@@ -8,7 +8,24 @@ MM_TO_M = 0.001
 M_TO_MM = 1000.0
 _last_stop_reason = ""
 _last_compute_time_seconds = 0.0
+_last_error_message = ""
 _playback_body_types = {}
+_MAX_STABLE_SPEED_MPS = 1.0e5
+_MAX_STABLE_POSITION_M = 1.0e6
+
+
+class NumericalInstabilityError(RuntimeError):
+    """A Chrono body escaped the workbench's finite simulation envelope."""
+
+
+def _set_last_error(message):
+    global _last_error_message
+    _last_error_message = str(message)
+
+
+def get_last_error():
+    """Return the user-facing failure explanation for the most recent run."""
+    return _last_error_message
 
 
 def _is_fixed_body_type(body_type):
@@ -181,6 +198,11 @@ def emitter_template_entries(emitter):
     ratios = list(getattr(emitter, "TemplateRatios", []))
     if len(ratios) != len(templates):
         ratios = [100.0] if len(templates) == 1 else [0.0] * len(templates)
+    # Per-template Float properties are used for ratio expressions.  They are
+    # evaluated by FreeCAD before the simulation and take precedence over the
+    # legacy FloatList values.
+    ratios = [getattr(emitter, f"TemplateRatio{index + 1}", ratio)
+              for index, ratio in enumerate(ratios)]
     return list(zip(templates, ratios))
 
 
@@ -248,6 +270,54 @@ def _clear_emitter_links(doc, emitters):
                 doc.removeObject(link.Name)
         emitter.GeneratedLinks = []
     doc.recompute()
+
+
+def refresh_emitted_link_groups(final_frame=None, emitters=None, doc=None):
+    """Populate each emitter's result folders from a completed simulation.
+
+    This intentionally runs only when a simulation has returned, or when the
+    explicit toolbar Refresh command is used.  It never changes tree grouping
+    during live stepping or a paused simulation.
+    """
+    if doc is None:
+        doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return 0
+    if emitters is None:
+        emitters = _all_emitters(doc)
+    if final_frame is None:
+        return 0
+
+    from ..objects.ChronoEmitter import ChronoEmitterFeature
+    fixed_names = set(getattr(final_frame, "passive_link_names", ()))
+    grouped = 0
+    for emitter in emitters:
+        ChronoEmitterFeature.ensure_generated_groups(emitter)
+        folders = {
+            "deactivated": getattr(emitter, "DeactivatedGroup", None),
+            "dynamic": getattr(emitter, "DynamicGroup", None),
+            "fixed": getattr(emitter, "FixedGroup", None),
+        }
+        if any(folder is None for folder in folders.values()):
+            continue
+        members = {key: [] for key in folders}
+        for link in getattr(emitter, "GeneratedLinks", []):
+            if link is None:
+                continue
+            if link.Name not in final_frame:
+                members["deactivated"].append(link)
+            elif link.Name in fixed_names:
+                members["fixed"].append(link)
+            else:
+                members["dynamic"].append(link)
+        for key, folder in folders.items():
+            for existing in list(folder.Group):
+                folder.removeObject(existing)
+            for link in members[key]:
+                folder.addObject(link)
+                grouped += 1
+    doc.recompute()
+    return grouped
 
 
 def _emitter_template_selector(entries):
@@ -859,9 +929,10 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
     Each placement frame maps App::Link.Name to FreeCAD.Placement; each speed
     frame maps the same link names to scalar linear velocity in m/s.
     """
-    global _last_stop_reason, _last_compute_time_seconds
+    global _last_stop_reason, _last_compute_time_seconds, _last_error_message
     _last_stop_reason = ""
     _last_compute_time_seconds = 0.0
+    _last_error_message = ""
     _playback_body_types.clear()
     compute_started_at = time.perf_counter()
     stop_delay = max(0.0, float(stop_delay))
@@ -878,6 +949,8 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         if _path_inserted:
             sys.path.remove(_custom_path)
     except ImportError:
+        _set_last_error(
+            "PyChrono could not be loaded. See the Report View for installation details.")
         _show_install_error()
         return None
 
@@ -888,19 +961,21 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
     emitters = collect_emitters(enabled_only=True)
     observers = collect_observers(enabled_only=True)
     if not rigid_bodies and not emitters:
-        FreeCAD.Console.PrintWarning(
-            "Chrono: No enabled rigid bodies or emitters found.\n"
-            "Add Dynamic/Fixed rigid bodies or configure an emitter first.\n"
-        )
+        message = ("No enabled rigid bodies or emitters found. Add Dynamic/Fixed "
+                   "rigid bodies or configure an emitter first.")
+        _set_last_error(message)
+        FreeCAD.Console.PrintWarning(f"Chrono: {message}\n")
         return None
     ratio_error = _emitter_template_ratio_error(emitters)
     if ratio_error:
+        _set_last_error(ratio_error)
         FreeCAD.Console.PrintWarning(f"Chrono: {ratio_error}\n")
         return None
     mesh_settings = _find_mesh_settings()
     if mesh_settings is None:
-        FreeCAD.Console.PrintWarning(
-            "Chrono: No global Mesh object found. Use Mesh Rigid Bodies first.\n")
+        message = "No global Mesh object found. Use Mesh Rigid Bodies first."
+        _set_last_error(message)
+        FreeCAD.Console.PrintWarning(f"Chrono: {message}\n")
         return None
     try:
         from ..objects.ChronoMesh import generate_meshes
@@ -908,11 +983,13 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         FreeCAD.Console.PrintMessage(
             f"Chrono: regenerated {generated_count} global mesh(es).\n")
     except Exception as exc:
-        FreeCAD.Console.PrintWarning(
-            f"Chrono: could not generate global meshes ({exc}).\n")
+        message = f"Could not generate global meshes ({exc})."
+        _set_last_error(message)
+        FreeCAD.Console.PrintWarning(f"Chrono: {message}\n")
         return None
     mesh_error = _mesh_settings_error(rigid_bodies, emitters, observers)
     if mesh_error:
+        _set_last_error(mesh_error)
         FreeCAD.Console.PrintWarning(f"Chrono: {mesh_error}\n")
         return None
 
@@ -935,6 +1012,18 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         collision_margin = max(0.0, getattr(world, "CollisionMargin", 0.001))
         linear_damping   = max(0.0, min(1.0, getattr(world, "LinearDamping", 0.0)))
         angular_damping  = max(0.0, min(1.0, getattr(world, "AngularDamping", 0.0)))
+        enable_velocity_limit = bool(getattr(world, "EnableVelocityLimit", False))
+        maximum_linear_velocity = max(
+            0.001, getattr(world, "MaximumLinearVelocity", 100.0))
+        maximum_angular_velocity = max(
+            0.001, getattr(world, "MaximumAngularVelocity", 100.0))
+        maximum_penetration_recovery_speed = max(
+            0.0, getattr(world, "MaximumPenetrationRecoverySpeed", 0.6))
+        enable_sleeping = bool(getattr(world, "EnableSleeping", False))
+        sleep_time = max(0.0, getattr(world, "SleepTime", 0.5))
+        sleep_linear_velocity = max(0.0, getattr(world, "SleepLinearVelocity", 0.01))
+        sleep_angular_velocity = max(0.0, getattr(world, "SleepAngularVelocity", 0.01))
+        disable_gyroscopic_torque = bool(getattr(world, "DisableGyroscopicTorque", False))
         stop_when_settled = getattr(world, "StopWhenSettled", False)
         settle_linear = max(0.0, getattr(world, "SettleLinearVelocity", 0.01))
         settle_angular = max(0.0, getattr(world, "SettleAngularVelocity", 0.01))
@@ -951,6 +1040,15 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         collision_margin = 0.001
         linear_damping   = 0.0
         angular_damping  = 0.0
+        enable_velocity_limit = False
+        maximum_linear_velocity = 100.0
+        maximum_angular_velocity = 100.0
+        maximum_penetration_recovery_speed = 0.6
+        enable_sleeping = False
+        sleep_time = 0.5
+        sleep_linear_velocity = 0.01
+        sleep_angular_velocity = 0.01
+        disable_gyroscopic_torque = False
         stop_when_settled = False
         settle_linear = 0.01
         settle_angular = 0.01
@@ -982,7 +1080,9 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         f"subSteps={sub_steps}, tick={chrono_tick*1000:.3f} ms, "
         f"gravity=({gx:.3f}, {gy:.3f}, {gz:.3f}) m/s², "
         f"contactModel={contact_model}, solverIterations={solver_iters}, "
-        f"linearDamping={linear_damping:.3f}, angularDamping={angular_damping:.3f}\n"
+        f"linearDamping={linear_damping:.3f}, angularDamping={angular_damping:.3f}, "
+        f"velocityLimit={'on' if enable_velocity_limit else 'off'}"
+        f" ({maximum_linear_velocity:g} m/s, {maximum_angular_velocity:g} rad/s)\n"
     )
 
     if cpu_parallel is None:
@@ -1004,13 +1104,18 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         client = p.connect(p.DIRECT, cpuParallel=collision_parallel,
                            contactModel=contact_model)
     except Exception as exc:
-        FreeCAD.Console.PrintError(f"Chrono: unable to start PyChrono: {exc}\n")
+        message = f"Unable to start PyChrono: {exc}"
+        _set_last_error(message)
+        FreeCAD.Console.PrintError(f"Chrono: {message}\n")
         _show_install_error(str(exc))
         return None
     p.setGravity(gx, gy, gz, physicsClientId=client)
     p.setTimeStep(chrono_tick, physicsClientId=client)
     p.setPhysicsEngineParameter(
         numSolverIterations=solver_iters, physicsClientId=client)
+    p.setPhysicsEngineParameter(
+        maximumPenetrationRecoverySpeed=maximum_penetration_recovery_speed,
+        physicsClientId=client)
     if cpu_parallel:
         # Apply this thread count to Chrono, Eigen, and (when selected) the
         # multicore collision system.
@@ -1048,6 +1153,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
     # creating two initially overlapping Chrono bodies.
     body_characteristic_radii = {}
     warned_waiting_emitters = set()
+    warned_out_of_range_bodies = set()
     # Emitted active bodies scheduled to become static at a simulation time.
     passivate_at = {}
     passivated_body_ids = set()
@@ -1341,10 +1447,30 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                     continue
                 position, _orientation = p.getBasePositionAndOrientation(
                     existing_id, physicsClientId=client)
-                separation_sq = sum(
-                    (candidate_m[axis] - position[axis]) ** 2
-                    for axis in range(3))
                 minimum = characteristic_radius + existing_radius
+                differences = tuple(
+                    candidate_m[axis] - position[axis] for axis in range(3))
+                if (not math.isfinite(minimum)
+                        or not all(math.isfinite(value) for value in differences)):
+                    # An unstable contact solve can launch a body far enough
+                    # that squaring its coordinate difference overflows. It
+                    # cannot occupy the local emission volume, so ignore it
+                    # for this guard and report the numerical problem once.
+                    if existing_id not in warned_out_of_range_bodies:
+                        warned_out_of_range_bodies.add(existing_id)
+                        FreeCAD.Console.PrintWarning(
+                            "Chrono: ignoring out-of-range particle '{}' in "
+                            "the emitter overlap check; reduce the time step "
+                            "or increase integration substeps.\n".format(
+                                body_map[existing_id][1].Label))
+                    continue
+                # First reject distant bodies without squaring their position
+                # difference. Only values below the local contact radius are
+                # squared, which keeps this check finite even after a solver
+                # instability has produced very large coordinates.
+                if any(abs(value) >= minimum for value in differences):
+                    continue
+                separation_sq = sum(value * value for value in differences)
                 if separation_sq < minimum * minimum:
                     clear = False
                     break
@@ -1383,6 +1509,14 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             restitution=restitution,
             lateralFriction=friction,
             collisionMargin=collision_margin,
+            enableVelocityLimit=enable_velocity_limit,
+            maximumLinearVelocity=maximum_linear_velocity,
+            maximumAngularVelocity=maximum_angular_velocity,
+            sleepingAllowed=enable_sleeping,
+            sleepTime=sleep_time,
+            sleepLinearVelocity=sleep_linear_velocity,
+            sleepAngularVelocity=sleep_angular_velocity,
+            disableGyroscopicTorque=disable_gyroscopic_torque,
             **_contact_material_parameters(emitter),
             physicsClientId=client,
         )
@@ -1622,6 +1756,30 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                 f"Chrono: emitted particle '{entry[1].Label}' became "
                 f"passive at frame {frame_number} (t={current_time:.6f} s).\n")
 
+    def check_numerical_stability(current_time, frame_number):
+        """Abort cleanly before runaway values cause an internal crash."""
+        for body_id, entry in body_map.items():
+            if not body_is_active(body_id, entry):
+                continue
+            position, _orientation = p.getBasePositionAndOrientation(
+                body_id, physicsClientId=client)
+            linear, _angular = p.getBaseVelocity(
+                body_id, physicsClientId=client)
+            position_magnitude = math.hypot(*position)
+            speed = math.hypot(*linear)
+            if (not math.isfinite(position_magnitude)
+                    or not math.isfinite(speed)
+                    or position_magnitude > _MAX_STABLE_POSITION_M
+                    or speed > _MAX_STABLE_SPEED_MPS):
+                raise NumericalInstabilityError(
+                    "numerical instability at frame {} (t={:.6f} s): "
+                    "'{}' has position magnitude {:.6g} m and speed {:.6g} m/s. "
+                    "Simulation aborted. Reduce the frame time step, increase "
+                    "Integration Substeps and Maximum Solver Iterations, and "
+                    "check mass, contact material, and initial overlaps.".format(
+                        frame_number, current_time, entry[1].Label,
+                        position_magnitude, speed))
+
     def destroy_contacted_bodies():
         """Remove active bodies as soon as they contact a destruction trigger."""
         destroyed = {}
@@ -1780,6 +1938,14 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                 restitution=rb.Restitution,
                 lateralFriction=max(0.0, getattr(rb, "SlidingFriction", 0.5)),
                 collisionMargin=collision_margin,
+                enableVelocityLimit=enable_velocity_limit,
+                maximumLinearVelocity=maximum_linear_velocity,
+                maximumAngularVelocity=maximum_angular_velocity,
+                sleepingAllowed=enable_sleeping,
+                sleepTime=sleep_time,
+                sleepLinearVelocity=sleep_linear_velocity,
+                sleepAngularVelocity=sleep_angular_velocity,
+                disableGyroscopicTorque=disable_gyroscopic_torque,
                 **_contact_material_parameters(rb),
                 physicsClientId=client,
             )
@@ -1928,6 +2094,8 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
                 update_emitter_conditions(step + 1, current_time)
                 destroy_contacted_bodies()
 
+            check_numerical_stability(current_time, step + 1)
+
             frame = SimulationFrame()
             speed_frame = {}
             for body_id, (rb, link, local_offset, is_emitted) in body_map.items():
@@ -1997,6 +2165,15 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         FreeCAD.Console.PrintMessage(
             "Chrono: simulation interrupted; disconnecting Chrono.\n")
         raise
+    except NumericalInstabilityError as exc:
+        _set_last_error(str(exc))
+        FreeCAD.Console.PrintError(f"Chrono: {exc}\n")
+        return None
+    except Exception as exc:
+        message = f"Simulation failed unexpectedly: {exc}"
+        _set_last_error(message)
+        FreeCAD.Console.PrintError(f"Chrono: {message}\n")
+        return None
 
     finally:
         p.disconnect(client)

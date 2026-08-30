@@ -23,6 +23,7 @@ class ChronoWorkbench(FreeCADGui.Workbench):
         from .commands import CmdAddMesh
         from .commands import CmdDowngrade
         from .commands import CmdRunSimulation
+        from .commands import CmdRefreshEmitterGroups
 
         tool_list = [
             "Chrono_CreateContainer",
@@ -43,6 +44,7 @@ class ChronoWorkbench(FreeCADGui.Workbench):
             "Chrono_AddObserver",
             "Separator",
             "Chrono_RunSimulation",
+            "Chrono_RefreshEmitterGroups",
         ]
         self.appendToolbar("Chrono Physics", tool_list)
         self.appendMenu("&Chrono Physics", tool_list)
