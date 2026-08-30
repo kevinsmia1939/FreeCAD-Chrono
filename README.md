@@ -1,8 +1,7 @@
 # FreeCAD Chrono Physics Workbench
 
-A rigid-body physics simulation workbench for FreeCAD powered by [Project Chrono](https://github.com/projectchrono/chrono) through PyChrono. It keeps the commands, document model, panels, and workflow of FreeCAD-BulletPhysics while using Chrono for rigid-body dynamics and contacts.
+A rigid-body physics simulation workbench for FreeCAD powered by [Project Chrono](https://github.com/projectchrono/chrono) through PyChrono. It keeps the commands, document model, panels, and workflow of FreeCAD-BulletPhysics while using Chrono for rigid-body dynamics and contacts.Code written with assistance from gpt-5.6-sol.
 
-Code written with assistance from gpt-5.6-sol.
 ---
 
 ## Screenshots
