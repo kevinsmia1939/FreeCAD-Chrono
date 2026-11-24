@@ -128,6 +128,7 @@ class ChronoWorldFeature:
                         "Disable gyroscopic torque for improved stability of fast-spinning non-uniform bodies")
         obj.DisableGyroscopicTorque = False
 
+        self._hide_sleep_and_settle_properties(obj)
         obj.Proxy = self
 
     def _ensure_properties(self, obj):
@@ -260,8 +261,15 @@ class ChronoWorldFeature:
     def execute(self, obj):
         pass
 
+    @staticmethod
+    def _hide_sleep_and_settle_properties(obj):
+        for name in ("EnableSleeping", "SleepTime", "SleepLinearVelocity", "SleepAngularVelocity",
+                     "StopWhenSettled", "SettleDuration", "SettleLinearVelocity", "SettleAngularVelocity"):
+            obj.setEditorMode(name, 2)
+
     def onDocumentRestored(self, obj):
         self._ensure_properties(obj)
+        self._hide_sleep_and_settle_properties(obj)
 
     def __getstate__(self):
         return None
@@ -373,29 +381,6 @@ class WorldSettingsPanel:
             world_obj, "MaximumPenetrationRecoverySpeed", 0.6)))
         phys_form.addRow("Maximum penetration recovery speed:", self.inp_penetration_recovery)
 
-        self.inp_sleeping = QtWidgets.QCheckBox("Enable Chrono sleeping")
-        self.inp_sleeping.setToolTip(
-            "Deactivate dynamic bodies after they remain below the selected velocity thresholds.")
-        self.inp_sleeping.setChecked(getattr(world_obj, "EnableSleeping", False))
-        phys_form.addRow(self.inp_sleeping)
-        self.inp_sleep_time = QtWidgets.QDoubleSpinBox()
-        self.inp_sleep_time.setRange(0.0, 3600.0)
-        self.inp_sleep_time.setDecimals(4)
-        self.inp_sleep_time.setSuffix(" s")
-        self.inp_sleep_time.setValue(max(0.0, getattr(world_obj, "SleepTime", 0.5)))
-        phys_form.addRow("Sleep time:", self.inp_sleep_time)
-        self.inp_sleep_linear = QtWidgets.QDoubleSpinBox()
-        self.inp_sleep_linear.setRange(0.0, 100000.0)
-        self.inp_sleep_linear.setDecimals(5)
-        self.inp_sleep_linear.setSuffix(" m/s")
-        self.inp_sleep_linear.setValue(max(0.0, getattr(world_obj, "SleepLinearVelocity", 0.01)))
-        phys_form.addRow("Sleep linear velocity:", self.inp_sleep_linear)
-        self.inp_sleep_angular = QtWidgets.QDoubleSpinBox()
-        self.inp_sleep_angular.setRange(0.0, 100000.0)
-        self.inp_sleep_angular.setDecimals(5)
-        self.inp_sleep_angular.setSuffix(" rad/s")
-        self.inp_sleep_angular.setValue(max(0.0, getattr(world_obj, "SleepAngularVelocity", 0.01)))
-        phys_form.addRow("Sleep angular velocity:", self.inp_sleep_angular)
         self.inp_disable_gyro = QtWidgets.QCheckBox("Disable gyroscopic torque")
         self.inp_disable_gyro.setToolTip(
             "Improves stability for fast-spinning thin or non-uniform bodies, at the cost of physical accuracy.")
@@ -462,39 +447,6 @@ class WorldSettingsPanel:
         self.inp_margin.setValue(getattr(world_obj, "CollisionMargin", 0.001))
         sim_form.addRow("Collision Envelope:", self.inp_margin)
 
-        self.inp_stop_when_settled = QtWidgets.QCheckBox(
-            "Finish simulation when dynamic bodies settle")
-        self.inp_stop_when_settled.setToolTip(
-            "Stop after every dynamic body stays below the selected velocity thresholds.\n"
-            "Pending launcher and emitter events keep the simulation running.")
-        self.inp_stop_when_settled.setChecked(
-            getattr(world_obj, "StopWhenSettled", False))
-        sim_form.addRow(self.inp_stop_when_settled)
-
-        self.inp_settle_linear = QtWidgets.QDoubleSpinBox()
-        self.inp_settle_linear.setRange(0.0, 1000.0)
-        self.inp_settle_linear.setDecimals(5)
-        self.inp_settle_linear.setSuffix(" m/s")
-        self.inp_settle_linear.setValue(
-            max(0.0, getattr(world_obj, "SettleLinearVelocity", 0.01)))
-        sim_form.addRow("Settle linear speed:", self.inp_settle_linear)
-
-        self.inp_settle_angular = QtWidgets.QDoubleSpinBox()
-        self.inp_settle_angular.setRange(0.0, 1000.0)
-        self.inp_settle_angular.setDecimals(5)
-        self.inp_settle_angular.setSuffix(" rad/s")
-        self.inp_settle_angular.setValue(
-            max(0.0, getattr(world_obj, "SettleAngularVelocity", 0.01)))
-        sim_form.addRow("Settle angular speed:", self.inp_settle_angular)
-
-        self.inp_settle_duration = QtWidgets.QDoubleSpinBox()
-        self.inp_settle_duration.setRange(0.0, 3600.0)
-        self.inp_settle_duration.setDecimals(3)
-        self.inp_settle_duration.setSuffix(" s")
-        self.inp_settle_duration.setValue(
-            max(0.0, getattr(world_obj, "SettleDuration", 0.5)))
-        sim_form.addRow("Settle duration:", self.inp_settle_duration)
-
         root.addWidget(sim_group)
         root.addStretch(1)
 
@@ -510,11 +462,6 @@ class WorldSettingsPanel:
         self.inp_max_linear_velocity.valueChanged.connect(self._apply)
         self.inp_max_angular_velocity.valueChanged.connect(self._apply)
         self.inp_penetration_recovery.valueChanged.connect(self._apply)
-        self.inp_sleeping.toggled.connect(self._update_sleep_controls)
-        self.inp_sleeping.toggled.connect(self._apply)
-        self.inp_sleep_time.valueChanged.connect(self._apply)
-        self.inp_sleep_linear.valueChanged.connect(self._apply)
-        self.inp_sleep_angular.valueChanged.connect(self._apply)
         self.inp_disable_gyro.toggled.connect(self._apply)
         self.inp_end_time.valueChanged.connect(self._apply)
         self.inp_timestep.valueChanged.connect(self._apply)
@@ -522,31 +469,12 @@ class WorldSettingsPanel:
         self.inp_contact_model.currentTextChanged.connect(self._apply)
         self.inp_substeps.valueChanged.connect(self._apply)
         self.inp_margin.valueChanged.connect(self._apply)
-        self.inp_stop_when_settled.toggled.connect(self._update_settle_controls)
-        self.inp_stop_when_settled.toggled.connect(self._apply)
-        self.inp_settle_linear.valueChanged.connect(self._apply)
-        self.inp_settle_angular.valueChanged.connect(self._apply)
-        self.inp_settle_duration.valueChanged.connect(self._apply)
-        self._update_settle_controls()
         self._update_velocity_limit_controls()
-        self._update_sleep_controls()
 
     def _update_velocity_limit_controls(self):
         enabled = self.inp_velocity_limit.isChecked()
         self.inp_max_linear_velocity.setEnabled(enabled)
         self.inp_max_angular_velocity.setEnabled(enabled)
-
-    def _update_sleep_controls(self):
-        enabled = self.inp_sleeping.isChecked()
-        self.inp_sleep_time.setEnabled(enabled)
-        self.inp_sleep_linear.setEnabled(enabled)
-        self.inp_sleep_angular.setEnabled(enabled)
-
-    def _update_settle_controls(self):
-        enabled = self.inp_stop_when_settled.isChecked()
-        self.inp_settle_linear.setEnabled(enabled)
-        self.inp_settle_angular.setEnabled(enabled)
-        self.inp_settle_duration.setEnabled(enabled)
 
     def _apply(self):
         obj = self._obj
@@ -559,10 +487,6 @@ class WorldSettingsPanel:
         obj.MaximumLinearVelocity = self.inp_max_linear_velocity.value()
         obj.MaximumAngularVelocity = self.inp_max_angular_velocity.value()
         obj.MaximumPenetrationRecoverySpeed = self.inp_penetration_recovery.value()
-        obj.EnableSleeping = self.inp_sleeping.isChecked()
-        obj.SleepTime = self.inp_sleep_time.value()
-        obj.SleepLinearVelocity = self.inp_sleep_linear.value()
-        obj.SleepAngularVelocity = self.inp_sleep_angular.value()
         obj.DisableGyroscopicTorque = self.inp_disable_gyro.isChecked()
         obj.EndTime          = self.inp_end_time.value()
         obj.TimeStep         = self.inp_timestep.value()
@@ -570,10 +494,6 @@ class WorldSettingsPanel:
         obj.ContactModel      = self.inp_contact_model.currentText()
         obj.SubSteps         = self.inp_substeps.value()
         obj.CollisionMargin  = self.inp_margin.value()
-        obj.StopWhenSettled = self.inp_stop_when_settled.isChecked()
-        obj.SettleLinearVelocity = self.inp_settle_linear.value()
-        obj.SettleAngularVelocity = self.inp_settle_angular.value()
-        obj.SettleDuration = self.inp_settle_duration.value()
         obj.Document.recompute()
 
     def reject(self):

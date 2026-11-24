@@ -1096,6 +1096,10 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
 
     from ..objects.ChronoWorld import find_world
 
+    from ..objects.ChronoContainer import find_container
+
+    settings = getattr(find_container(), "SleepSettings", None)
+    enable_passivation = getattr(settings, "EnablePassivation", False)
     rigid_bodies = collect_rigid_bodies()
     all_emitters = _all_emitters()
     emitters = collect_emitters(enabled_only=True)
@@ -1645,7 +1649,7 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
         body_birth_times[body_id] = emission_time
         become_passive_after = max(
             0.0, getattr(emitter, "BecomePassiveAfter", 0.0))
-        if mass > 0.0 and become_passive_after > 0.0:
+        if enable_passivation and mass > 0.0 and become_passive_after > 0.0:
             passivate_at[body_id] = emission_time + become_passive_after
         _report_event(
             f"particle '{link.Label}' emitted by '{emitter.Label}'.")

@@ -1,5 +1,7 @@
 import FreeCAD
 
+from .ChronoSleepSettings import ensure_sleep_settings
+
 
 class ChronoContainerFeature:
     def __init__(self, obj):
@@ -27,6 +29,7 @@ class ChronoContainerFeature:
         pass
 
     def onDocumentRestored(self, obj):
+        ensure_sleep_settings(obj)
         if not hasattr(obj, "Emitters"):
             obj.addProperty("App::PropertyLinkList", "Emitters", "Container",
                             "Rigid body emitter objects managed by this simulation")
@@ -75,6 +78,8 @@ class ChronoContainerViewProvider:
         children = []
         if hasattr(obj, "World") and obj.World is not None:
             children.append(obj.World)
+        if getattr(obj, "SleepSettings", None):
+            children.append(obj.SleepSettings)
         if hasattr(obj, "BodyTable") and obj.BodyTable is not None:
             children.append(obj.BodyTable)
         if hasattr(obj, "MeshSettings") and obj.MeshSettings is not None:
@@ -180,6 +185,7 @@ def make_container(doc=None):
     table = make_body_table(doc)
     container.BodyTable = table
 
+    ensure_sleep_settings(container)
     make_mesh_settings(container)
     make_run_simulation(container)
 

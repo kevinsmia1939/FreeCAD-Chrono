@@ -114,6 +114,7 @@ class ChronoEmitterFeature:
                 ("TangentialDamping", "SMC optional tangential damping (N s/m; 0 uses model)", 0.0)):
             obj.addProperty("App::PropertyFloat", name, "Contact Material", description)
             setattr(obj, name, value)
+        obj.setEditorMode("BecomePassiveAfter", 2)
         obj.Proxy = self
         self.ensure_generated_groups(obj)
 
@@ -258,6 +259,7 @@ class ChronoEmitterFeature:
             obj.addProperty("App::PropertyFloat", "BecomePassiveAfter", "Dynamic Body",
                             "Seconds after emission before an active particle becomes passive; 0 disables conversion")
             obj.BecomePassiveAfter = 0.0
+        obj.setEditorMode("BecomePassiveAfter", 2)
         if not hasattr(obj, "DirectionRandomSeed"):
             obj.addProperty("App::PropertyInteger", "DirectionRandomSeed", "Dynamic Body",
                             "Direction random seed. 0 creates a new random sequence each simulation")
@@ -439,15 +441,6 @@ class EmitterPanel:
         self.velocity_spin.setDecimals(4)
         self.velocity_spin.setSuffix(" m/s")
         self.velocity_spin.setValue(max(0.0, getattr(emitter, "Velocity", 0.0)))
-        self.become_passive_spin = QtWidgets.QDoubleSpinBox()
-        self.become_passive_spin.setRange(0.0, 100000.0)
-        self.become_passive_spin.setDecimals(4)
-        self.become_passive_spin.setSuffix(" s")
-        self.become_passive_spin.setToolTip(
-            "Dynamic particles become fixed bodies after this emission age. "
-            "Set 0 to keep them dynamic.")
-        self.become_passive_spin.setValue(
-            max(0.0, getattr(emitter, "BecomePassiveAfter", 0.0)))
         direction_widget, self.direction_spins = self._vector_input(
             emitter.Direction, -100000.0, 100000.0, 4, "Direction vector")
         direction_random_widget, self.direction_random_spins = self._vector_input(
@@ -460,7 +453,6 @@ class EmitterPanel:
         self.passive_note = QtWidgets.QLabel("Fixed body selected: velocity and direction are ignored.")
         self.passive_note.setWordWrap(True)
         launch_form.addRow("Velocity:", self.velocity_spin)
-        launch_form.addRow("Become fixed after:", self.become_passive_spin)
         launch_form.addRow("Direction:", direction_widget)
         launch_form.addRow("Direction randomness:", direction_random_widget)
         launch_form.addRow("Direction random seed:", self.direction_random_seed_spin)
@@ -493,7 +485,6 @@ class EmitterPanel:
         self.random_seed_spin.valueChanged.connect(self._save)
         self.direction_random_seed_spin.valueChanged.connect(self._save)
         self.velocity_spin.valueChanged.connect(self._save)
-        self.become_passive_spin.valueChanged.connect(self._save)
         self._update_body_type()
         self._update_condition_controls()
         self._update_rate_mode()
@@ -712,7 +703,6 @@ class EmitterPanel:
         emitter.RandomSeed = self.random_seed_spin.value()
         if not self._property_has_expression(emitter, "Velocity"):
             emitter.Velocity = self.velocity_spin.value()
-        emitter.BecomePassiveAfter = self.become_passive_spin.value()
         if not self._property_has_expression(emitter, "Direction"):
             emitter.Direction = self._vector_from_spins(self.direction_spins)
         emitter.DirectionRandomness = self._vector_from_spins(
@@ -757,7 +747,6 @@ class EmitterPanel:
     def _update_body_type(self):
         passive = self.type_combo.currentText() == "Fixed"
         self.velocity_spin.setEnabled(not passive)
-        self.become_passive_spin.setEnabled(not passive)
         for spin in self.direction_spins + self.direction_random_spins:
             spin.setEnabled(not passive)
         self.direction_random_seed_spin.setEnabled(not passive)
