@@ -14,6 +14,13 @@ import re
 
 import pychrono as chrono
 
+try:
+    import pychrono.multicore as chrono_multicore
+except (ImportError, OSError):
+    # Older/distribution PyChrono builds do not ship the multicore module.
+    # Keep the existing ChSystemNSC + multicore-collision fallback available.
+    chrono_multicore = None
+
 
 DIRECT = 0
 GEOM_SPHERE = 2
@@ -40,8 +47,20 @@ _CONTACT_STEP_SECONDS_PER_MM = 2.0e-4
 class _Client:
     def __init__(self, cpu_parallel=True, contact_model="NSC"):
         self.contact_model = contact_model if contact_model == "SMC" else "NSC"
-        self.system = (chrono.ChSystemSMC() if self.contact_model == "SMC"
-                       else chrono.ChSystemNSC())
+        multicore_nsc_class = (
+            getattr(chrono_multicore, "ChSystemMulticoreNSC", None)
+            if chrono_multicore is not None else None
+        )
+        self.multicore_nsc = bool(
+            cpu_parallel and self.contact_model == "NSC"
+            and multicore_nsc_class is not None
+        )
+        if self.multicore_nsc:
+            self.system = multicore_nsc_class()
+        elif self.contact_model == "SMC":
+            self.system = chrono.ChSystemSMC()
+        else:
+            self.system = chrono.ChSystemNSC()
         collision_type = (
             chrono.ChCollisionSystem.Type_MULTICORE
             if cpu_parallel
@@ -102,8 +121,9 @@ def getCapabilities():
         "multicore_collision_available": bool(
             collision_system is not None
             and hasattr(collision_system, "Type_MULTICORE")),
-        "multicore_nsc_system_available": hasattr(
-            chrono, "ChSystemMulticoreNSC"),
+        "multicore_nsc_system_available": bool(
+            chrono_multicore is not None
+            and hasattr(chrono_multicore, "ChSystemMulticoreNSC")),
         "capped_cylindrical_shell_available": bool(
             hasattr(chrono, "ChCollisionShapeCylindricalShell")
             and hasattr(chrono.ChCollisionShapeCylindricalShell,
@@ -321,16 +341,26 @@ def setTimeStep(timeStep, physicsClientId=0):
 def setPhysicsEngineParameter(physicsClientId=0, **parameters):
     client = _client(physicsClientId)
     if "numSolverIterations" in parameters:
-        solver = client.system.GetSolver()
-        if solver.IsIterative():
-            solver.AsIterative().SetMaxIterations(
-                max(1, int(parameters["numSolverIterations"])))
+        iterations = max(1, int(parameters["numSolverIterations"]))
+        if client.multicore_nsc:
+            client.system.SetSolverMaxIterations(iterations)
+        else:
+            solver = client.system.GetSolver()
+            if solver.IsIterative():
+                solver.AsIterative().SetMaxIterations(iterations)
     if "numSolverThreads" in parameters:
         threads = max(1, int(parameters["numSolverThreads"]))
         client.system.SetNumThreads(threads)
     if "maximumPenetrationRecoverySpeed" in parameters:
-        client.system.SetMaxPenetrationRecoverySpeed(max(
-            0.0, float(parameters["maximumPenetrationRecoverySpeed"]) * _LENGTH_SCALE))
+        recovery_speed = max(
+            0.0,
+            float(parameters["maximumPenetrationRecoverySpeed"])
+            * _LENGTH_SCALE,
+        )
+        if client.multicore_nsc:
+            client.system.SetContactRecoverySpeed(recovery_speed)
+        else:
+            client.system.SetMaxPenetrationRecoverySpeed(recovery_speed)
 
 
 def createCollisionShape(shapeType, physicsClientId=0, **parameters):

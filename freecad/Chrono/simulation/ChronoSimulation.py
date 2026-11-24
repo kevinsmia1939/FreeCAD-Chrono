@@ -264,12 +264,55 @@ def _emitter_links(doc):
 
 
 def _clear_emitter_links(doc, emitters):
+    """Remove generated particle links and return the number removed."""
+    if doc is None:
+        return 0
+
+    emitted_names = {
+        link.Name
+        for emitter in emitters
+        for link in list(getattr(emitter, "GeneratedLinks", []))
+        if link is not None
+    }
+    # A simulation interrupted while creating an emission can leave a link in
+    # the document before GeneratedLinks is updated. Such links are cache
+    # results too and must not survive an explicit reset.
+    emitted_names.update(
+        obj.Name for obj in doc.Objects
+        if obj.Name.startswith("_ChEmit_")
+    )
+
     for emitter in emitters:
-        for link in list(getattr(emitter, "GeneratedLinks", [])):
-            if link is not None:
-                doc.removeObject(link.Name)
+        for property_name in ("DeactivatedGroup", "DynamicGroup", "FixedGroup"):
+            group = getattr(emitter, property_name, None)
+            if group is None:
+                continue
+            for member in list(getattr(group, "Group", [])):
+                if member is not None and member.Name in emitted_names:
+                    group.removeObject(member)
         emitter.GeneratedLinks = []
+
+    removed = 0
+    for name in emitted_names:
+        if doc.getObject(name) is not None:
+            doc.removeObject(name)
+            removed += 1
+        _playback_body_types.pop((doc.Name, name), None)
     doc.recompute()
+    return removed
+
+
+def clear_emitted_particles(doc=None):
+    """Restore emitters to their pre-simulation state and return links removed."""
+    if doc is None:
+        doc = FreeCAD.ActiveDocument
+    if doc is None:
+        return 0
+    removed = _clear_emitter_links(doc, _all_emitters(doc))
+    if removed:
+        FreeCAD.Console.PrintMessage(
+            f"Chrono: removed {removed} emitted particle object(s).\n")
+    return removed
 
 
 def refresh_emitted_link_groups(final_frame=None, emitters=None, doc=None):
@@ -1274,7 +1317,12 @@ def run_simulation(callback=None, stop_on_contact=None, stop_delay=0.0,
             cpu_threads = threading["thread_count"]
             p.setPhysicsEngineParameter(
                 numSolverThreads=cpu_threads, physicsClientId=client)
-            if collision_parallel:
+            if (collision_parallel and contact_model == "NSC"
+                    and threading.get("multicore_nsc_system_available", False)):
+                FreeCAD.Console.PrintMessage(
+                    f"Chrono: ChSystemMulticoreNSC enabled "
+                    f"({cpu_threads} threads).\n")
+            elif collision_parallel:
                 FreeCAD.Console.PrintMessage(
                     f"Chrono: multicore collision and threaded core enabled "
                     f"({cpu_threads} threads).\n")
@@ -2367,15 +2415,24 @@ def load_simulation_cache(doc=None):
 
 
 def delete_simulation_cache(doc=None):
-    """Delete the cache file for *doc*. Returns True if deleted, False if none existed."""
+    """Delete cached frames and reset all emitted particles for *doc*.
+
+    Return True when either a disk cache or at least one generated particle
+    existed. Clearing emitted objects is deliberately performed even if the
+    cache file was already removed outside FreeCAD.
+    """
     import os
+    if doc is None:
+        doc = FreeCAD.ActiveDocument
     path = _cache_path(doc)
+    deleted = False
     if path and os.path.exists(path):
         os.remove(path)
         FreeCAD.Console.PrintMessage(
             f"Chrono: simulation cache deleted — {path}\n")
-        return True
-    return False
+        deleted = True
+    removed = clear_emitted_particles(doc)
+    return deleted or removed > 0
 
 
 # ---------------------------------------------------------------------------

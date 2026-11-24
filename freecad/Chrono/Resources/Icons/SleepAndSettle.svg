@@ -1,10 +1,50 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <g stroke="#17364c" stroke-width="3" stroke-linejoin="round">
-    <path fill="#72c5dd" d="m9 35 13-7 13 7-13 8z"/>
-    <path fill="#388dab" d="m9 35 13 8v13L9 48z"/>
-    <path fill="#236985" d="m22 43 13-8v13l-13 8z"/>
-    <path fill="#ffd16a" d="M34 7h23v6L43 26h14v7H33v-6l14-13H34z"/>
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 64 64"
+   width="64"
+   height="64"
+   version="1.1"
+   id="svg6"
+   sodipodi:docname="SleepAndSettle.svg"
+   inkscape:version="1.4.4 (dcaf3e7d9e, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs6" />
+  <sodipodi:namedview
+     id="namedview6"
+     pagecolor="#505050"
+     bordercolor="#eeeeee"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#505050"
+     inkscape:zoom="9.3139221"
+     inkscape:cx="38.168668"
+     inkscape:cy="32.80036"
+     inkscape:window-width="1920"
+     inkscape:window-height="1052"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="g4" />
+  <g
+     stroke="#17364c"
+     stroke-width="3"
+     stroke-linejoin="round"
+     id="g4">
+    <path
+       fill="#ffd16a"
+       d="m 29.36576,8.4375248 h 28.077216 v 7.3131702 l -17.09048,15.845203 h 17.09048 v 8.532033 H 28.145011 V 32.81476 L 45.235491,16.969557 H 29.36576 Z"
+       id="path4"
+       style="stroke-width:3" />
+    <path
+       fill="#ffd16a"
+       d="M 5.5973775,24.031498 H 33.674594 v 7.313171 l -17.09048,15.845203 h 17.09048 v 8.532033 H 4.3766285 V 48.408734 L 21.467109,32.563531 H 5.5973775 Z"
+       id="path4-6"
+       style="stroke-width:3" />
   </g>
-  <path d="M6 58h51" stroke="#17364c" stroke-width="6" stroke-linecap="round"/>
-  <path d="M6 57h51" stroke="#9baeb7" stroke-width="3" stroke-linecap="round"/>
 </svg>

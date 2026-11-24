@@ -764,11 +764,13 @@ class SimulationPanel:
 
     def _delete_cache(self):
         from ..simulation.ChronoSimulation import delete_simulation_cache
-        deleted = delete_simulation_cache()
-        if deleted:
-            self._clear_playback("Cache deleted.")
-        else:
-            self.sim_status.setText("No cache file found.")
+        cleared = delete_simulation_cache()
+        self._clear_playback(
+            "Cache and emitted particles cleared."
+            if cleared else
+            "Cache already empty; emitted particles reset.")
+        if FreeCAD.GuiUp:
+            FreeCADGui.updateGui()
 
     def _show_speed_graph(self):
         if len(self.frames) < 2:

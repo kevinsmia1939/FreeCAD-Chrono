@@ -114,7 +114,10 @@ try:
         shell_particles.append(physics.createMultiBody(
             4.0e-7, analytical_rod_shape, (x, y, z),
             physicsClientId=client))
-    for _step in range(1500):
+    # Do not sample exactly at the first impact instant: with rigid NSC
+    # contacts the lower layer can momentarily separate from the cap while
+    # transferring its impulse to the upper layer.
+    for _step in range(1600):
         physics.stepSimulation(physicsClientId=client)
     for particle in shell_particles:
         position, _rotation = physics.getBasePositionAndOrientation(
